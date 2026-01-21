@@ -4,6 +4,7 @@ import platform
 import rtoml
 import time
 import sha3
+from enum import IntEnum
 
 class PortMin:
     # Must be initialized with a unique integer for each process
@@ -13,25 +14,24 @@ class PortMin:
 MAX_NODES = 100
 
 
-def p2p_port(n):
-    assert n <= MAX_NODES
-    return PortMin.n + n
+class PortCategory(IntEnum):
+    ZGS_P2P = 0
+    ZG_ETH_WS = 1
+    ZG_ETH_METRICS = 2
+    ZG_AUTHRPC = 3
+    ZG_NODE_API = 4
+    ZG_P2P = 5
+    ZG_DISCOVERY = 6
+    ZG_CONSENSUS_P2P = 7
+    ZGS_RPC = 8
+    ZGS_GRPC = 9
+    ZG_ETH_HTTP = 10
+    ZG_CONSENSUS_RPC = 11
+    ZG_BLOCKCHAIN_P2P = 12
+    ZG_BLOCKCHAIN_WS = 13
+    ZG_PPROF = 14
+    KV_RPC = 15
 
-
-def rpc_port(n):
-    return PortMin.n + MAX_NODES + n
-
-
-def blockchain_p2p_port(n):
-    return PortMin.n + 2 * MAX_NODES + n
-
-
-def blockchain_rpc_port(n):
-    return PortMin.n + 3 * MAX_NODES + n
-
-
-def blockchain_rpc_port_core(n):
-    return PortMin.n + 4 * MAX_NODES + n
 
 def arrange_port(category: int, node_index: int) -> int:
     return PortMin.n + (100 + category) * MAX_NODES + node_index

@@ -163,7 +163,7 @@ dependencies = [
 [[package]]
 name = "append_merkle"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "anyhow",
  "eth2_ssz",
@@ -835,7 +835,7 @@ dependencies = [
 [[package]]
 name = "channel"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
  "tokio",
@@ -858,13 +858,13 @@ dependencies = [
 [[package]]
 name = "chunk_pool"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "anyhow",
  "async-lock 2.8.0",
  "hashlink 0.8.4",
  "lazy_static",
- "log_entry_sync 0.1.0 (git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
+ "log_entry_sync 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
  "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
  "network",
  "shared_types",
@@ -1047,7 +1047,7 @@ checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
 [[package]]
 name = "contract-interface"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "ethers",
  "serde_json",
@@ -1391,7 +1391,7 @@ dependencies = [
 [[package]]
 name = "directory"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 
 [[package]]
 name = "dirs"
@@ -2235,7 +2235,7 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 [[package]]
 name = "file_location_cache"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "hashlink 0.8.4",
  "lazy_static",
@@ -2766,7 +2766,7 @@ dependencies = [
 [[package]]
 name = "hashset_delay"
 version = "0.2.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "futures",
  "tokio-util 0.6.10",
@@ -4435,7 +4435,7 @@ dependencies = [
 [[package]]
 name = "lighthouse_metrics"
 version = "0.2.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "lazy_static",
  "prometheus",
@@ -4551,7 +4551,7 @@ dependencies = [
 [[package]]
 name = "log_entry_sync"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -4642,7 +4642,7 @@ checksum = "6c8640c5d730cb13ebd907d8d04b52f55ac9a2eec55b440c8892f40d56c76c1d"
 [[package]]
 name = "merkle_light"
 version = "0.4.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "rayon",
 ]
@@ -4650,7 +4650,7 @@ dependencies = [
 [[package]]
 name = "merkle_tree"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "merkle_light",
  "tiny-keccak",
@@ -4704,7 +4704,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "miner"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "async-trait",
  "blake2",
@@ -4963,7 +4963,7 @@ dependencies = [
 [[package]]
 name = "network"
 version = "0.2.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "channel",
  "directory",
@@ -6383,7 +6383,7 @@ dependencies = [
  "kv_types",
  "merkle_light",
  "merkle_tree",
- "rpc 0.1.0 (git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
+ "rpc 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
  "serde",
  "serde_json",
  "shared_types",
@@ -6396,7 +6396,7 @@ dependencies = [
 [[package]]
 name = "rpc"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "append_merkle",
  "base64 0.13.1",
@@ -6900,7 +6900,7 @@ dependencies = [
 [[package]]
 name = "shared_types"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -7112,7 +7112,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "storage"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -7148,7 +7148,7 @@ dependencies = [
 [[package]]
 name = "storage-async"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -7206,7 +7206,7 @@ dependencies = [
  "jsonrpsee",
  "kv_types",
  "rpc 0.1.0",
- "rpc 0.1.0 (git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
+ "rpc 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
  "rusqlite",
  "serde_json",
  "shared_types",
@@ -7332,7 +7332,7 @@ dependencies = [
 [[package]]
 name = "sync"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -7342,7 +7342,7 @@ dependencies = [
  "file_location_cache",
  "lazy_static",
  "libp2p",
- "log_entry_sync 0.1.0 (git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
+ "log_entry_sync 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
  "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
  "network",
  "rand 0.8.5",
@@ -7420,7 +7420,7 @@ checksum = "c63f48baada5c52e65a29eef93ab4f8982681b67f9e8d29c7b05abcfec2b9ffe"
 [[package]]
 name = "task_executor"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "exit-future",
  "futures",
@@ -8831,7 +8831,7 @@ dependencies = [
 [[package]]
 name = "zgs_seal"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "ethereum-types 0.14.1",
  "tiny-keccak",
@@ -8841,12 +8841,12 @@ dependencies = [
 [[package]]
 name = "zgs_spec"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 
 [[package]]
 name = "zgs_version"
 version = "0.1.0"
-source = "git+https://github.com/0glabs/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
 dependencies = [
  "git-version",
  "target_info",

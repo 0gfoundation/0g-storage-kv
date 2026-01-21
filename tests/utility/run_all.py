@@ -6,11 +6,12 @@ import sys
 
 from concurrent.futures import ProcessPoolExecutor
 
-from utility.build_binary import build_conflux, build_bsc, build_zg, build_cli
+from utility.build_binary import build_zg, build_cli
+from utility.utils import MAX_NODES, PortCategory
 
 DEFAULT_PORT_MIN = 11000
 DEFAULT_PORT_MAX = 65535
-DEFAULT_PORT_RANGE = 600
+DEFAULT_PORT_RANGE = (max(PortCategory) + 1) * MAX_NODES
 
 def print_testcase_result(color, glyph, script, start_time):
     print(color[1] + glyph + " Testcase " + script + "\telapsed: " + str(int(time.time() - start_time)) + " seconds" + color[0], flush=True)
@@ -64,8 +65,6 @@ def run_all(test_dir: str, test_subdirs: list[str]=[], slow_tests: set[str]={}, 
         os.makedirs(tmp_dir, exist_ok=True)
 
     # Build blockchain binaries if absent
-    build_conflux(tmp_dir)
-    build_bsc(tmp_dir)
     build_zg(tmp_dir)
     build_cli(tmp_dir)
 
@@ -154,4 +153,3 @@ def run_all(test_dir: str, test_subdirs: list[str]=[], slow_tests: set[str]={}, 
         for c in failed:
             print(c)
         sys.exit(1)
-

@@ -12,7 +12,8 @@ from utility.submission import submit_data
 from kv_utility.submission import create_submission
 from utility.utils import (
     assert_equal,
-    rpc_port,
+    arrange_port,
+    PortCategory,
     wait_until,
 )
 from config.node_config import TX_PARAMS, TX_PARAMS1, GENESIS_ACCOUNT, GENESIS_ACCOUNT1
@@ -35,8 +36,11 @@ class DataFetcherTest(KVTestFramework):
 
         # connect to node #1&2, upload data to #0
         updated_config = {
-            "zgs_node_urls": f"http://127.0.0.1:{rpc_port(1)},http://127.0.0.1:{rpc_port(2)}",
-            "zgs_admin_url": f"http://127.0.0.1:{rpc_port(1)}",
+            "zgs_node_urls": (
+                f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 1)},"
+                f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 2)}"
+            ),
+            "zgs_admin_url": f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 1)}",
         }
 
         self.setup_kv_node(0, self.stream_ids, updated_config)

@@ -4,21 +4,17 @@ import logging
 import os
 import pdb
 import random
-import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
 import traceback
 from pathlib import Path
 
-from eth_utils import encode_hex
 from test_framework.blockchain_node import BlockChainNodeType
 from test_framework.test_framework import TestFramework
 from utility.utils import PortMin, is_windows_platform, wait_until, assert_equal
 from kv_test_framework.kv_node import KVNode
-from utility.build_binary import build_cli
 
 __file_path__ = os.path.dirname(os.path.realpath(__file__))
 
@@ -161,11 +157,7 @@ class KVTestFramework(TestFramework):
             os.symlink(self.options.tmpdir, dst)
             self.log.info("Symlink: %s", Path(dst).absolute())
 
-        if self.blockchain_node_type == BlockChainNodeType.Conflux:
-            self.blockchain_binary = os.path.abspath(self.options.conflux)
-        elif self.blockchain_node_type == BlockChainNodeType.BSC:
-            self.blockchain_binary = os.path.abspath(self.options.bsc)
-        elif self.blockchain_node_type == BlockChainNodeType.ZG:
+        if self.blockchain_node_type == BlockChainNodeType.ZG:
             self.blockchain_binary = os.path.abspath(self.options.zg)
         else:
             raise NotImplementedError
