@@ -120,7 +120,7 @@ impl FlowStore {
                 .get_entry_batch(chunk_index)?
                 .unwrap_or_else(EntryBatchData::new);
             let start_byte = (chunk.start_index % ENTRY_BATCH_SIZE as u64) as usize * ENTRY_SIZE;
-            // check data existance
+            // check data existence
             if chunk.data.is_empty() || batch.get(start_byte, chunk.data.len()).is_some() {
                 continue;
             }
