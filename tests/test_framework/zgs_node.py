@@ -6,10 +6,10 @@ from config.node_config import ZGS_CONFIG, update_config
 from test_framework.blockchain_node import NodeType, TestNode
 from utility.utils import (
     initialize_toml_config,
-    p2p_port,
-    rpc_port,
-    blockchain_rpc_port,
+    arrange_port,
+    PortCategory,
 )
+
 
 class ZgsNode(TestNode):
     def __init__(
@@ -32,22 +32,29 @@ class ZgsNode(TestNode):
             else:
                 libp2p_nodes = []
                 for i in range(index):
-                    libp2p_nodes.append(f"/ip4/127.0.0.1/tcp/{p2p_port(i)}")
+                    libp2p_nodes.append(
+                        f"/ip4/127.0.0.1/tcp/{arrange_port(PortCategory.ZGS_P2P, i)}"
+                    )
 
-        rpc_listen_address = f"127.0.0.1:{rpc_port(index)}"
+        rpc_listen_address = f"127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, index)}"
+        grpc_listen_address = f"127.0.0.1:{arrange_port(PortCategory.ZGS_GRPC, index)}"
 
         indexed_config = {
-            "network_libp2p_port": p2p_port(index),
-            "network_discovery_port": p2p_port(index),
+            "network_libp2p_port": arrange_port(PortCategory.ZGS_P2P, index),
+            "network_discovery_port": arrange_port(PortCategory.ZGS_P2P, index),
             "rpc": {
                 "listen_address": rpc_listen_address,
                 "listen_address_admin": rpc_listen_address,
+                "listen_address_grpc": grpc_listen_address,
             },
             "network_libp2p_nodes": libp2p_nodes,
             "log_contract_address": log_contract_address,
             "mine_contract_address": mine_contract_address,
             "reward_contract_address": reward_contract_address,
-            "blockchain_rpc_endpoint": f"http://127.0.0.1:{blockchain_rpc_port(0)}",
+            "blockchain_rpc_endpoint": os.environ.get(
+                "ZGS_BLOCKCHAIN_RPC_ENDPOINT",
+                f"http://127.0.0.1:{arrange_port(PortCategory.ZG_ETH_HTTP, 0)}",
+            ),
         }
         # Set configs for this specific node.
         update_config(local_conf, indexed_config)
@@ -90,13 +97,13 @@ class ZgsNode(TestNode):
 
     def zgs_download_segment(self, data_root, start_index, end_index):
         return self.rpc.zgs_downloadSegment([data_root, start_index, end_index])
-    
+
     def zgs_download_segment_decoded(self, data_root: str, start_chunk_index: int, end_chunk_index: int) -> bytes:
         encodedSegment = self.rpc.zgs_downloadSegment([data_root, start_chunk_index, end_chunk_index])
         return None if encodedSegment is None else base64.b64decode(encodedSegment)
 
     def zgs_get_file_info(self, data_root):
-        return self.rpc.zgs_getFileInfo([data_root])
+        return self.rpc.zgs_getFileInfo([data_root, True])
 
     def zgs_get_file_info_by_tx_seq(self, tx_seq):
         return self.rpc.zgs_getFileInfoByTxSeq([tx_seq])
@@ -107,7 +114,7 @@ class ZgsNode(TestNode):
 
     def admin_start_sync_file(self, tx_seq):
         return self.rpc.admin_startSyncFile([tx_seq])
-    
+
     def admin_start_sync_chunks(self, tx_seq: int, start_chunk_index: int, end_chunk_index: int):
         return self.rpc.admin_startSyncChunks([tx_seq, start_chunk_index, end_chunk_index])
 
@@ -117,8 +124,8 @@ class ZgsNode(TestNode):
     def sync_status_is_completed_or_unknown(self, tx_seq):
         status = self.rpc.admin_getSyncStatus([tx_seq])
         return status == "Completed" or status == "unknown"
-    
-    def admin_get_file_location(self, tx_seq, all_shards = True):
+
+    def admin_get_file_location(self, tx_seq, all_shards=True):
         return self.rpc.admin_getFileLocation([tx_seq, all_shards])
 
     def clean_data(self):

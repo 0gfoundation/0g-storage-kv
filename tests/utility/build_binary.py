@@ -11,8 +11,6 @@ from utility.utils import is_windows_platform, wait_until
 # v1.0.0-ci release
 GITHUB_DOWNLOAD_URL="https://api.github.com/repos/0gfoundation/0g-storage-node/releases/152560136"
 
-CONFLUX_BINARY = "conflux.exe" if is_windows_platform() else "conflux"
-BSC_BINARY = "geth.exe" if is_windows_platform() else "geth"
 ZG_BINARY = "0gchaind.exe" if is_windows_platform() else "0gchaind"
 CLIENT_BINARY = "0g-storage-client.exe" if is_windows_platform() else "0g-storage-client"
 
@@ -23,41 +21,6 @@ class BuildBinaryResult(Enum):
     AlreadyExists = 0
     Installed = 1
     NotInstalled = 2
-
-def build_conflux(dir: str) -> BuildBinaryResult:
-    # Download or build conflux binary if absent
-    result = __download_from_github(
-        dir=dir,
-        binary_name=CONFLUX_BINARY,
-        github_url=GITHUB_DOWNLOAD_URL, 
-        asset_name=__asset_name(CONFLUX_BINARY, zip=True),
-    )
-
-    if result == BuildBinaryResult.AlreadyExists or result == BuildBinaryResult.Installed:
-        return result
-
-    return __build_from_github(
-        dir=dir,
-        binary_name=CONFLUX_BINARY,
-        github_url="https://github.com/Conflux-Chain/conflux-rust.git",
-        build_cmd="cargo build --release --bin conflux",
-        compiled_relative_path=["target", "release"],
-    )
-
-def build_bsc(dir: str) -> BuildBinaryResult:
-    # Download bsc binary if absent
-    result = __download_from_github(
-        dir=dir,
-        binary_name=BSC_BINARY,
-        github_url="https://api.github.com/repos/bnb-chain/bsc/releases/79485895",
-        asset_name=__asset_name(BSC_BINARY),
-    )
-
-    # Requires to download binary successfully, since it is not ready to build
-    # binary from source code.
-    assert result != BuildBinaryResult.NotInstalled, "Cannot download binary from github [%s]" % BSC_BINARY
-
-    return result
 
 def build_zg(dir: str) -> BuildBinaryResult:
     # Download or build 0gchain binary if absent

@@ -1,4 +1,4 @@
-from utility.utils import PortMin, MAX_NODES
+from utility.utils import arrange_port, PortCategory
 
 def kv_rpc_port(n):
-    return PortMin.n + 5 * MAX_NODES + n
+    return arrange_port(PortCategory.KV_RPC, n)
