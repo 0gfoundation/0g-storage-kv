@@ -15,7 +15,7 @@ def build_zgs(dir: str) -> BuildBinaryResult:
     return __build_from_github(
         dir=dir,
         binary_name=ZGS_BINARY,
-        github_url="https://github.com/0glabs/0g-storage-node.git",
+        github_url="https://github.com/0gfoundation/0g-storage-node.git",
         build_cmd="cargo build --release",
         compiled_relative_path=["target", "release"],
     )

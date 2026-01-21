@@ -9,7 +9,7 @@ from enum import Enum, unique
 from utility.utils import is_windows_platform, wait_until
 
 # v1.0.0-ci release
-GITHUB_DOWNLOAD_URL="https://api.github.com/repos/0glabs/0g-storage-node/releases/152560136"
+GITHUB_DOWNLOAD_URL="https://api.github.com/repos/0gfoundation/0g-storage-node/releases/152560136"
 
 CONFLUX_BINARY = "conflux.exe" if is_windows_platform() else "conflux"
 BSC_BINARY = "geth.exe" if is_windows_platform() else "geth"
@@ -74,7 +74,7 @@ def build_zg(dir: str) -> BuildBinaryResult:
     return __build_from_github(
         dir=dir,
         binary_name=ZG_BINARY,
-        github_url="https://github.com/0glabs/0g-chain.git",
+        github_url="https://github.com/0gfoundation/0g-chain.git",
         build_cmd="git fetch origin pull/74/head:pr-74; git checkout pr-74; make install; cp $(go env GOPATH)/bin/0gchaind .",
         compiled_relative_path=[],
     )
@@ -84,7 +84,7 @@ def build_cli(dir: str) -> BuildBinaryResult:
     return __build_from_github(
         dir=dir,
         binary_name=CLIENT_BINARY,
-        github_url="https://github.com/0glabs/0g-storage-client.git",
+        github_url="https://github.com/0gfoundation/0g-storage-client.git",
         git_rev=CLI_GIT_REV,
         build_cmd="go build",
         compiled_relative_path=[],
