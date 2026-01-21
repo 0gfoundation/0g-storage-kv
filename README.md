@@ -25,7 +25,7 @@ Copy the `config_example.toml` to `config.toml` and update the parameters:
 ###                   Key-Value Stream Options                      ###
 #######################################################################
 
-# In KV Senario, each independent KV database abstraction has an unique stream id.
+# In KV Scenario, each independent KV database abstraction has an unique stream id.
 
 # Streams to monitor.
 stream_ids = ["000000000000000000000000000000000000000000000000000000000000f2bd", "000000000000000000000000000000000000000000000000000000000000f009", "0000000000000000000000000000000000000000000000000000000000016879", "0000000000000000000000000000000000000000000000000000000000002e3d"]
