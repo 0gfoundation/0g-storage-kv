@@ -51,10 +51,7 @@ class ZgsNode(TestNode):
             "log_contract_address": log_contract_address,
             "mine_contract_address": mine_contract_address,
             "reward_contract_address": reward_contract_address,
-            "blockchain_rpc_endpoint": os.environ.get(
-                "ZGS_BLOCKCHAIN_RPC_ENDPOINT",
-                f"http://127.0.0.1:{arrange_port(PortCategory.ZG_ETH_HTTP, 0)}",
-            ),
+            "blockchain_rpc_endpoint": f"http://127.0.0.1:{arrange_port(PortCategory.ZG_ETH_HTTP, 0)}",
         }
         # Set configs for this specific node.
         update_config(local_conf, indexed_config)

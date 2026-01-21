@@ -29,9 +29,8 @@ class PortCategory(IntEnum):
     ZG_CONSENSUS_RPC = 11
     ZG_BLOCKCHAIN_P2P = 12
     ZG_BLOCKCHAIN_WS = 13
-    ZG_TENDERMINT_RPC = 14
-    ZG_PPROF = 15
-    KV_RPC = 16
+    ZG_PPROF = 14
+    KV_RPC = 15
 
 
 def arrange_port(category: int, node_index: int) -> int:

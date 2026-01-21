@@ -9,7 +9,6 @@ from utility.utils import (
     PortCategory,
     assert_equal,
 )
-from kv_utility.utils import kv_rpc_port
 
 bytes_per_query = 1024 * 256
 
@@ -33,9 +32,9 @@ class KVNode(TestNode):
 
         indexed_config = {
             "stream_ids": stream_ids,
-            "rpc_listen_address": f"127.0.0.1:{kv_rpc_port(index)}",
+            "rpc_listen_address": f"127.0.0.1:{arrange_port(PortCategory.KV_RPC,index)}",
             "log_contract_address": log_contract_address,
-            "blockchain_rpc_endpoint": f"http://127.0.0.1:{arrange_port(PortCategory.ZG_TENDERMINT_RPC, 0)}",
+            "blockchain_rpc_endpoint": f"http://127.0.0.1:{arrange_port(PortCategory.ZG_ETH_HTTP, 0)}",
             "zgs_node_urls": f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 0)}",
             "zgs_admin_url": f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 0)}",
         }
