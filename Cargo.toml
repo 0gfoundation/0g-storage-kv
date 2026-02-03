@@ -16,11 +16,11 @@ enr = { path = "version-meld/enr" }
 discv5 = { path = "version-meld/discv5" }
 
 [workspace.dependencies]
-append_merkle = { git = "https://github.com/0gfoundation/0g-storage-node.git",rev = "96f846073f111adfa31df926be0e4a25e0b85f54" }
-merkle_light = { git = "https://github.com/0gfoundation/0g-storage-node.git",rev = "96f846073f111adfa31df926be0e4a25e0b85f54" }
-merkle_tree = { git = "https://github.com/0gfoundation/0g-storage-node.git",rev = "96f846073f111adfa31df926be0e4a25e0b85f54" }
-shared_types = { git = "https://github.com/0gfoundation/0g-storage-node.git",rev = "96f846073f111adfa31df926be0e4a25e0b85f54" }
-task_executor = { git = "https://github.com/0gfoundation/0g-storage-node.git",rev = "96f846073f111adfa31df926be0e4a25e0b85f54" }
-storage = { git = "https://github.com/0gfoundation/0g-storage-node.git",rev = "96f846073f111adfa31df926be0e4a25e0b85f54", package = "storage" }
-contract-interface = { git = "https://github.com/0gfoundation/0g-storage-node.git",rev = "96f846073f111adfa31df926be0e4a25e0b85f54" }
-metrics = { git = "https://github.com/Conflux-Chain/conflux-rust.git", rev = "992ebc5483d937c8f6b883e266f8ed2a67a7fa9a" }
+append_merkle = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main" }
+merkle_light = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main" }
+merkle_tree = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main" }
+shared_types = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main" }
+task_executor = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main" }
+storage = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main", package = "storage" }
+contract-interface = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main" }
+metrics = { git = "https://github.com/Conflux-Chain/conflux-rust.git", rev = "c4734e337c66d38e6396742cd5117b596e8d2603" }

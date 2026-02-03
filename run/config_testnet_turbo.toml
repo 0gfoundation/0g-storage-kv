@@ -20,9 +20,9 @@ kv_db_dir = "kv.DB"
 ###                     Log Sync Config Options                     ###
 #######################################################################
 
-blockchain_rpc_endpoint = ""
-log_contract_address = ""
-log_sync_start_block_number = 0
+blockchain_rpc_endpoint = "https://evmrpc-testnet.0g.ai"
+log_contract_address = "0x22E03a6A89B950F1c82ec5e74F8eCa321a105296"
+log_sync_start_block_number = 1
 
 #######################################################################
 ###                     RPC Config Options                          ###
@@ -35,8 +35,9 @@ rpc_enabled = true
 rpc_listen_address = "0.0.0.0:6789"
 
 # Zerog storage nodes to download data from.
-zgs_node_urls = "http://127.0.0.1:5678,http://127.0.0.1:5680"
-zgs_admin_url = "http://127.0.0.1:5679"
+zgs_node_urls = ""
+zgs_admin_url = ""
+
 #######################################################################
 ###                     Misc Config Options                         ###
 #######################################################################
