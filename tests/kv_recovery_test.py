@@ -14,7 +14,7 @@ from utility.utils import (
     assert_equal,
     wait_until,
 )
-from config.node_config import TX_PARAMS 
+from config.node_config import TX_PARAMS
 
 
 class KVRecoveryTest(KVTestFramework):

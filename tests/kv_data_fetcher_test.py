@@ -25,8 +25,9 @@ class DataFetcherTest(KVTestFramework):
         self.num_nodes = 3
         for i in range(self.num_nodes):
             self.zgs_node_configs[i] = {
-                "find_peer_timeout_secs": 1,
+                "find_peer_timeout_secs": 30,
                 "confirmation_block_count": 1,
+                "sync": {"auto_sync_enabled": True},
             }
 
     def run_test(self):
@@ -36,10 +37,7 @@ class DataFetcherTest(KVTestFramework):
 
         # connect to node #1&2, upload data to #0
         updated_config = {
-            "zgs_node_urls": (
-                f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 1)},"
-                f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 2)}"
-            ),
+            "zgs_node_urls": ",".join([node.rpc_url for node in self.nodes[1:]]),
         }
 
         self.setup_kv_node(0, self.stream_ids, updated_config)
@@ -93,6 +91,7 @@ class DataFetcherTest(KVTestFramework):
         wait_until(
             lambda: self.kv_nodes[0].kv_get_trasanction_result(self.next_tx_seq)
             == "Commit",
+            timeout=120,
         )
         first_version = self.next_tx_seq
         self.next_tx_seq += 1
@@ -117,7 +116,7 @@ class DataFetcherTest(KVTestFramework):
         wait_until(
             lambda: self.kv_nodes[0].kv_get_trasanction_result(self.next_tx_seq)
             == "Commit",
-            timeout=180,
+            timeout=120,
         )
         second_version = self.next_tx_seq
         self.next_tx_seq += 1

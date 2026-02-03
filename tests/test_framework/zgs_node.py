@@ -39,6 +39,11 @@ class ZgsNode(TestNode):
         rpc_listen_address = f"127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, index)}"
         grpc_listen_address = f"127.0.0.1:{arrange_port(PortCategory.ZGS_GRPC, index)}"
 
+        bootnodes = [
+            f"/ip4/127.0.0.1/tcp/{arrange_port(PortCategory.ZGS_P2P, 0)}/p2p/16Uiu2HAmLv86fy88fDNaGJwvSoFoxnafaebJdk8SV4eTxGs2WxDF",
+            f"/ip4/127.0.0.1/tcp/{arrange_port(PortCategory.ZGS_P2P, 1)}/p2p/16Uiu2HAkvb6rzaWUxzAbzniNM3UC9QmdjkjM69NhYfXGzJEerSGi",
+        ]
+
         indexed_config = {
             "network_libp2p_port": arrange_port(PortCategory.ZGS_P2P, index),
             "network_discovery_port": arrange_port(PortCategory.ZGS_P2P, index),
@@ -48,6 +53,7 @@ class ZgsNode(TestNode):
                 "listen_address_grpc": grpc_listen_address,
             },
             "network_libp2p_nodes": libp2p_nodes,
+            "network_bootnodes": bootnodes,
             "log_contract_address": log_contract_address,
             "mine_contract_address": mine_contract_address,
             "reward_contract_address": reward_contract_address,

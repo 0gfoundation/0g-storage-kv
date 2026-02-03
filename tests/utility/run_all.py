@@ -98,7 +98,7 @@ def run_all(test_dir: str, test_subdirs: list[str]=[], slow_tests: set[str]={}, 
 
     for subdir in test_subdirs:
         subdir_path = os.path.join(test_dir, subdir)
-        for file in os.listdir(subdir_path):
+        for file in os.listdir(subdir_path)[::-1]:
             if file.endswith("_test.py"):
                 rel_path = os.path.join(subdir, file)
                 if rel_path not in slow_tests and rel_path not in long_manual_tests and rel_path not in single_run_tests:
