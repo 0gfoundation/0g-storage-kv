@@ -58,8 +58,10 @@ rpc_enabled = true
 # HTTP server address to bind for public RPC.
 rpc_listen_address = "0.0.0.0:6789"
 
-# Zerog storage nodes to download data from.
-zgs_node_urls = "http://127.0.0.1:5678,http://127.0.0.1:5679"
+# Indexer endpoint to fetch storage node locations. Leave empty to use zgs_node_urls instead.
+indexer_url = "https://indexer-storage-turbo-testnet.0g.ai"
+# Static ZGS node list (used when indexer_url is empty).
+zgs_node_urls = ""
 
 #######################################################################
 ###                     Misc Config Options                         ###

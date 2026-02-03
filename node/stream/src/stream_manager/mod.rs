@@ -5,7 +5,6 @@ mod stream_replayer;
 use crate::StreamConfig;
 use anyhow::Result;
 use ethereum_types::H256;
-use jsonrpsee::http_client::HttpClient;
 use kv_types::KVTransaction;
 use ssz::Encode;
 use std::{collections::HashSet, sync::Arc};
@@ -23,8 +22,9 @@ impl StreamManager {
     pub async fn initialize(
         config: &StreamConfig,
         store: Arc<RwLock<dyn Store>>,
-        clients: Vec<HttpClient>,
-        admin_client: Option<HttpClient>,
+        indexer_url: Option<String>,
+        zgs_nodes: Vec<String>,
+        zgs_rpc_timeout: u64,
         task_executor: TaskExecutor,
     ) -> Result<(StreamDataFetcher, StreamReplayer)> {
         // initialize
@@ -58,8 +58,9 @@ impl StreamManager {
         let fetcher = StreamDataFetcher::new(
             config.clone(),
             store.clone(),
-            clients,
-            admin_client,
+            indexer_url,
+            zgs_nodes,
+            zgs_rpc_timeout,
             task_executor,
         )
         .await?;

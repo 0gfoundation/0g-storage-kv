@@ -48,20 +48,29 @@ impl ZgsKVConfig {
             .rpc_listen_address
             .parse::<std::net::SocketAddr>()
             .map_err(|e| format!("Unable to parse rpc_listen_address: {:?}", e))?;
+        if self.indexer_url.is_empty() && self.zgs_node_urls.is_empty() {
+            return Err("either indexer_url or zgs_node_urls must be set".to_string());
+        }
+        if !self.indexer_url.is_empty() {
+            self.indexer_url
+                .parse::<Uri>()
+                .map_err(|e| format!("Invalid indexer_url: {}", e))?;
+        }
 
         Ok(RPCConfig {
             enabled: self.rpc_enabled,
             listen_address,
             chunks_per_segment: self.rpc_chunks_per_segment,
-            zgs_nodes: to_zgs_nodes(self.zgs_node_urls.clone())
-                .map_err(|e| format!("failed to parse zgs_node_urls: {}", e))?,
-            admin_node_address: if self.zgs_admin_url.is_empty() {
+            indexer_url: if self.indexer_url.is_empty() {
                 None
             } else {
-                self.zgs_admin_url
-                    .parse::<Uri>()
-                    .map_err(|e| format!("Invalid URL: {}", e))?;
-                Some(self.zgs_admin_url.clone())
+                Some(self.indexer_url.clone())
+            },
+            zgs_nodes: if self.zgs_node_urls.is_empty() {
+                Vec::new()
+            } else {
+                to_zgs_nodes(self.zgs_node_urls.clone())
+                    .map_err(|e| format!("failed to parse zgs_node_urls: {}", e))?
             },
             max_query_len_in_bytes: self.max_query_len_in_bytes,
             max_response_body_in_bytes: self.max_response_body_in_bytes,
@@ -100,6 +109,7 @@ impl ZgsKVConfig {
     }
 }
 
+// zgs_node_urls can be used as a static node list; otherwise indexer_url is used.
 pub fn to_zgs_nodes(zgs_node_urls: String) -> Result<Vec<String>, String> {
     if zgs_node_urls.is_empty() {
         return Err("zgs_node_urls is empty".to_string());

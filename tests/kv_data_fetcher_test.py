@@ -40,7 +40,6 @@ class DataFetcherTest(KVTestFramework):
                 f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 1)},"
                 f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 2)}"
             ),
-            "zgs_admin_url": f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 1)}",
         }
 
         self.setup_kv_node(0, self.stream_ids, updated_config)

@@ -36,7 +36,6 @@ class KVNode(TestNode):
             "log_contract_address": log_contract_address,
             "blockchain_rpc_endpoint": f"http://127.0.0.1:{arrange_port(PortCategory.ZG_ETH_HTTP, 0)}",
             "zgs_node_urls": f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 0)}",
-            "zgs_admin_url": f"http://127.0.0.1:{arrange_port(PortCategory.ZGS_RPC, 0)}",
         }
         # Set configs for this specific node.
         local_conf.update(indexed_config)
