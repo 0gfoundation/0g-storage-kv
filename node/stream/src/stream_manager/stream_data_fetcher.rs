@@ -20,11 +20,18 @@ use tokio::sync::{
     mpsc::{self, UnboundedSender},
     RwLock,
 };
+use zgs_storage::config::{all_shards_available, ShardConfig};
 
 const RETRY_WAIT_MS: u64 = 1000;
 const ENTRIES_PER_SEGMENT: usize = 1024;
 const MAX_DOWNLOAD_TASK: usize = 5;
 const MAX_RETRY: usize = 5;
+
+#[derive(Clone, Debug)]
+struct LocationCandidate {
+    url: String,
+    shard_config: Option<ShardConfig>,
+}
 
 pub struct StreamDataFetcher {
     config: StreamConfig,
@@ -164,6 +171,73 @@ impl StreamDataFetcher {
         })
     }
 
+    fn parse_shard_config(config: &Value) -> Option<ShardConfig> {
+        let obj = config.as_object()?;
+        let shard_id = obj
+            .get("shardId")
+            .or_else(|| obj.get("shard_id"))
+            .and_then(|v| v.as_u64())? as usize;
+        let num_shard = obj
+            .get("numShard")
+            .or_else(|| obj.get("num_shard"))
+            .and_then(|v| v.as_u64())? as usize;
+        let config = ShardConfig {
+            shard_id,
+            num_shard,
+        };
+        if config.validate().is_err() {
+            return None;
+        }
+        Some(config)
+    }
+
+    fn select_download_nodes(candidates: Vec<LocationCandidate>, root_hex: &str) -> Result<Vec<String>> {
+        let mut urls = Vec::new();
+        let mut with_config = Vec::new();
+        let mut without_config = Vec::new();
+
+        for candidate in candidates {
+            if let Some(config) = candidate.shard_config {
+                with_config.push((candidate.url, config));
+            } else {
+                without_config.push(candidate.url);
+            }
+        }
+
+        if with_config.is_empty() {
+            urls.extend(without_config);
+            if urls.is_empty() {
+                bail!("indexer returned no locations for root {}", root_hex);
+            }
+            urls.sort();
+            urls.dedup();
+            return Ok(urls);
+        }
+
+        let mut selected_urls = Vec::new();
+        let mut selected_configs = Vec::new();
+        let mut covered = false;
+        for (url, config) in with_config {
+            selected_urls.push(url);
+            selected_configs.push(config);
+            if all_shards_available(selected_configs.clone()) {
+                covered = true;
+                break;
+            }
+        }
+
+        if !covered {
+            bail!(
+                "file not found or shards incomplete, no shard-covered node set for root {}",
+                root_hex
+            );
+        }
+
+        selected_urls.sort();
+        selected_urls.dedup();
+        Ok(selected_urls)
+    }
+
     async fn fetch_locations(&self, root_hex: String) -> Result<Vec<String>> {
         if !self.static_node_urls.is_empty() {
             return Ok(self.static_node_urls.clone());
@@ -172,26 +246,30 @@ impl StreamDataFetcher {
             .indexer_client
             .request("indexer_getFileLocations", rpc_params![root_hex.clone()])
             .await?;
-        let mut urls = Vec::new();
+        let mut candidates = Vec::new();
         for loc in locations {
             match loc {
-                Value::String(url) => urls.push(url),
+                Value::String(url) => candidates.push(LocationCandidate {
+                    url,
+                    shard_config: None,
+                }),
                 Value::Object(map) => {
                     if let Some(url) = map
                         .get("URL")
                         .or_else(|| map.get("url"))
                         .and_then(|v| v.as_str())
                     {
-                        urls.push(url.to_string());
+                        let shard_config = map.get("config").and_then(Self::parse_shard_config);
+                        candidates.push(LocationCandidate {
+                            url: url.to_string(),
+                            shard_config,
+                        });
                     }
                 }
                 _ => {}
             }
         }
-        if urls.is_empty() {
-            bail!("indexer returned no locations for root {}", root_hex);
-        }
-        Ok(urls)
+        Self::select_download_nodes(candidates, &root_hex)
     }
 
     fn build_clients(&self, urls: &[String]) -> Result<Vec<HttpClient>> {
