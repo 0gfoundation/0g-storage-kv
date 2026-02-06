@@ -8,7 +8,7 @@ from enum import IntEnum
 
 class PortMin:
     # Must be initialized with a unique integer for each process
-    n = 11000
+    n = 15000
 
 
 MAX_NODES = 100
@@ -27,14 +27,11 @@ class PortCategory(IntEnum):
     ZGS_GRPC = 9
     ZG_ETH_HTTP = 10
     ZG_CONSENSUS_RPC = 11
-    ZG_BLOCKCHAIN_P2P = 12
-    ZG_BLOCKCHAIN_WS = 13
-    ZG_PPROF = 14
-    KV_RPC = 15
+    KV_RPC = 12
 
 
 def arrange_port(category: int, node_index: int) -> int:
-    return PortMin.n + (100 + category) * MAX_NODES + node_index
+    return PortMin.n + category * MAX_NODES + node_index
 
 def wait_until(predicate, *, attempts=float("inf"), timeout=float("inf"), lock=None):
     if attempts == float("inf") and timeout == float("inf"):

@@ -35,13 +35,16 @@ pub fn configure(logfile: &str, executor: TaskExecutor) {
                 interval.tick().await;
 
                 let new_config = match tokio::fs::read_to_string(&logfile).await {
-                    Ok(c) if c == config => continue,
-                    Ok(c) => c,
+                    Ok(c) => c.trim_end().to_string(),
                     Err(e) => {
                         println!("Unable to read log file {}: {:?}", logfile, e);
                         continue;
                     }
                 };
+
+                if new_config == config {
+                    continue;
+                }
 
                 println!("Updating log config to {:?}", new_config);
 

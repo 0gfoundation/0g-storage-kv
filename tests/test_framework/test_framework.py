@@ -59,6 +59,15 @@ class TestFramework:
         self.num_deployed_contracts = 0
         self.zgs_node_key_files = []
 
+        # Prefer deterministic libp2p identities when test keys exist.
+        tests_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        for i in range(3):
+            key_path = os.path.join(
+                tests_dir, "config", "zgs", "network", f"node{i}", "key"
+            )
+            if os.path.exists(key_path):
+                self.zgs_node_key_files.append(key_path)
+
         # Set default binary path
         binary_ext = ".exe" if is_windows_platform() else ""
         tests_dir = os.path.dirname(__file_path__)

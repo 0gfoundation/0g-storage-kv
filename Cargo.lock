@@ -163,7 +163,7 @@ dependencies = [
 [[package]]
 name = "append_merkle"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "anyhow",
  "eth2_ssz",
@@ -172,7 +172,7 @@ dependencies = [
  "itertools 0.13.0",
  "lazy_static",
  "lru 0.12.5",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "metrics",
  "once_cell",
  "serde",
  "tiny-keccak",
@@ -487,6 +487,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c4b4d0bd25bd0b74681c0ad21497610ce1b7c91b1022cd21c80c6fbdd9476b0"
 
 [[package]]
+name = "axum"
+version = "0.6.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b829e4e32b91e643de6eafe82b1d90675f5874230191a4ffbc1b336dec4d6bf"
+dependencies = [
+ "async-trait",
+ "axum-core",
+ "bitflags 1.3.2",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "hyper",
+ "itoa",
+ "matchit",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite 0.2.14",
+ "rustversion",
+ "serde",
+ "sync_wrapper",
+ "tower",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "759fa577a247914fd3f7f76d62972792636412fbfd634cd452f6a385a74d2d2c"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "mime",
+ "rustversion",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.72"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -564,7 +609,7 @@ dependencies = [
  "lazy_static",
  "lazycell",
  "peeking_take_while",
- "prettyplease",
+ "prettyplease 0.2.20",
  "proc-macro2",
  "quote",
  "regex",
@@ -835,9 +880,9 @@ dependencies = [
 [[package]]
 name = "channel"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "metrics",
  "tokio",
 ]
 
@@ -858,14 +903,14 @@ dependencies = [
 [[package]]
 name = "chunk_pool"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "anyhow",
  "async-lock 2.8.0",
  "hashlink 0.8.4",
  "lazy_static",
- "log_entry_sync 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "log_entry_sync 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?branch=main)",
+ "metrics",
  "network",
  "shared_types",
  "storage-async",
@@ -1047,10 +1092,22 @@ checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
 [[package]]
 name = "contract-interface"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "ethers",
  "serde_json",
+]
+
+[[package]]
+name = "contract-wrapper"
+version = "0.1.0"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
+dependencies = [
+ "ethers",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1391,7 +1448,7 @@ dependencies = [
 [[package]]
 name = "directory"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 
 [[package]]
 name = "dirs"
@@ -1932,7 +1989,7 @@ dependencies = [
  "ethers-core",
  "ethers-etherscan",
  "eyre",
- "prettyplease",
+ "prettyplease 0.2.20",
  "proc-macro2",
  "quote",
  "regex",
@@ -2235,11 +2292,11 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 [[package]]
 name = "file_location_cache"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "hashlink 0.8.4",
  "lazy_static",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "metrics",
  "network",
  "parking_lot 0.12.3",
  "priority-queue",
@@ -2766,7 +2823,7 @@ dependencies = [
 [[package]]
 name = "hashset_delay"
 version = "0.2.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "futures",
  "tokio-util 0.6.10",
@@ -2971,6 +3028,18 @@ dependencies = [
  "rustls 0.21.12",
  "tokio",
  "tokio-rustls 0.24.1",
+]
+
+[[package]]
+name = "hyper-timeout"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb958482e8c7be4bc3cf272a766a2b0bf1a6755e7a6ae777f017a31d11b13b1"
+dependencies = [
+ "hyper",
+ "pin-project-lite 0.2.14",
+ "tokio",
+ "tokio-io-timeout",
 ]
 
 [[package]]
@@ -4435,7 +4504,7 @@ dependencies = [
 [[package]]
 name = "lighthouse_metrics"
 version = "0.2.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "lazy_static",
  "prometheus",
@@ -4536,7 +4605,7 @@ dependencies = [
  "jsonrpsee",
  "kv_types",
  "lazy_static",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=992ebc5483d937c8f6b883e266f8ed2a67a7fa9a)",
+ "metrics",
  "reqwest",
  "serde_json",
  "shared_types",
@@ -4551,7 +4620,7 @@ dependencies = [
 [[package]]
 name = "log_entry_sync"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -4564,7 +4633,7 @@ dependencies = [
  "futures-util",
  "jsonrpsee",
  "lazy_static",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "metrics",
  "reqwest",
  "serde_json",
  "shared_types",
@@ -4624,6 +4693,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
 
 [[package]]
+name = "matchit"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4642,7 +4717,7 @@ checksum = "6c8640c5d730cb13ebd907d8d04b52f55ac9a2eec55b440c8892f40d56c76c1d"
 [[package]]
 name = "merkle_light"
 version = "0.4.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "rayon",
 ]
@@ -4650,29 +4725,10 @@ dependencies = [
 [[package]]
 name = "merkle_tree"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "merkle_light",
  "tiny-keccak",
-]
-
-[[package]]
-name = "metrics"
-version = "0.1.0"
-source = "git+https://github.com/Conflux-Chain/conflux-rust.git?rev=992ebc5483d937c8f6b883e266f8ed2a67a7fa9a#992ebc5483d937c8f6b883e266f8ed2a67a7fa9a"
-dependencies = [
- "chrono",
- "futures",
- "influx_db_client",
- "lazy_static",
- "log",
- "log4rs",
- "parking_lot 0.11.2",
- "rand 0.7.3",
- "serde",
- "time 0.1.45",
- "timer",
- "tokio",
 ]
 
 [[package]]
@@ -4704,11 +4760,12 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "miner"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "async-trait",
  "blake2",
  "contract-interface",
+ "contract-wrapper",
  "ethereum-types 0.14.1",
  "ethers",
  "hex",
@@ -4963,7 +5020,7 @@ dependencies = [
 [[package]]
 name = "network"
 version = "0.2.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "channel",
  "directory",
@@ -5689,6 +5746,16 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
 name = "prettyplease"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c8646e95016a7a6c4adea95bafa8a16baab64b583356217f2c85db4a39d9a86"
+dependencies = [
+ "proc-macro2",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "prettyplease"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f12335488a2f3b0a83b14edad48dca9879ce89b2edd10e80237e4e852dd645e"
@@ -5861,6 +5928,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b82eaa1d779e9a4bc1c3217db8ffbeabaae1dca241bf70183242128d48681cd"
+dependencies = [
+ "bytes",
+ "prost-derive 0.11.9",
+]
+
+[[package]]
 name = "prost-build"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5898,6 +5975,28 @@ dependencies = [
  "prost 0.10.4",
  "prost-types 0.10.1",
  "regex",
+ "tempfile",
+ "which",
+]
+
+[[package]]
+name = "prost-build"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "119533552c9a7ffacc21e099c24a0ac8bb19c2a2a3f363de84cd9b844feab270"
+dependencies = [
+ "bytes",
+ "heck 0.4.1",
+ "itertools 0.10.5",
+ "lazy_static",
+ "log",
+ "multimap",
+ "petgraph",
+ "prettyplease 0.1.25",
+ "prost 0.11.9",
+ "prost-types 0.11.9",
+ "regex",
+ "syn 1.0.109",
  "tempfile",
  "which",
 ]
@@ -5942,6 +6041,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-derive"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5d2d8d10f3c6ded6da8b05b5fb3b8a5082514344d56c9f871412d29b4e075b4"
+dependencies = [
+ "anyhow",
+ "itertools 0.10.5",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "prost-types"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5959,6 +6071,15 @@ checksum = "2d0a014229361011dc8e69c8a1ec6c2e8d0f2af7c91e3ea3f5b2170298461e68"
 dependencies = [
  "bytes",
  "prost 0.10.4",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "213622a1460818959ac1181aaeb2dc9c7f63df720db7d788b3e24eacd1983e13"
+dependencies = [
+ "prost 0.11.9",
 ]
 
 [[package]]
@@ -6383,7 +6504,7 @@ dependencies = [
  "kv_types",
  "merkle_light",
  "merkle_tree",
- "rpc 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
+ "rpc 0.2.0",
  "serde",
  "serde_json",
  "shared_types",
@@ -6395,21 +6516,26 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+version = "0.2.0"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "append_merkle",
  "base64 0.13.1",
  "chunk_pool",
+ "ethereum-types 0.14.1",
  "file_location_cache",
  "futures",
  "futures-channel",
  "jsonrpsee",
  "merkle_light",
  "merkle_tree",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "metrics",
  "miner",
  "network",
+ "parking_lot 0.12.3",
+ "prost 0.11.9",
+ "prost-build 0.11.9",
+ "prost-types 0.11.9",
  "serde",
  "serde_json",
  "shared_types",
@@ -6418,6 +6544,9 @@ dependencies = [
  "sync",
  "task_executor",
  "tokio",
+ "tonic",
+ "tonic-build",
+ "tonic-reflection",
  "tracing",
 ]
 
@@ -6900,7 +7029,7 @@ dependencies = [
 [[package]]
 name = "shared_types"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -7112,7 +7241,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "storage"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -7128,7 +7257,7 @@ dependencies = [
  "lazy_static",
  "merkle_light",
  "merkle_tree",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "metrics",
  "once_cell",
  "parking_lot 0.12.3",
  "rayon",
@@ -7148,9 +7277,10 @@ dependencies = [
 [[package]]
 name = "storage-async"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "anyhow",
+ "append_merkle",
  "backtrace",
  "eth2_ssz",
  "shared_types",
@@ -7206,7 +7336,7 @@ dependencies = [
  "jsonrpsee",
  "kv_types",
  "rpc 0.1.0",
- "rpc 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
+ "rpc 0.2.0",
  "rusqlite",
  "serde_json",
  "shared_types",
@@ -7332,7 +7462,7 @@ dependencies = [
 [[package]]
 name = "sync"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "anyhow",
  "append_merkle",
@@ -7342,8 +7472,8 @@ dependencies = [
  "file_location_cache",
  "lazy_static",
  "libp2p",
- "log_entry_sync 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54)",
- "metrics 0.1.0 (git+https://github.com/Conflux-Chain/conflux-rust.git?rev=c4734e337c66d38e6396742cd5117b596e8d2603)",
+ "log_entry_sync 0.1.0 (git+https://github.com/0gfoundation/0g-storage-node.git?branch=main)",
+ "metrics",
  "network",
  "rand 0.8.5",
  "serde",
@@ -7420,7 +7550,7 @@ checksum = "c63f48baada5c52e65a29eef93ab4f8982681b67f9e8d29c7b05abcfec2b9ffe"
 [[package]]
 name = "task_executor"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "exit-future",
  "futures",
@@ -7805,6 +7935,86 @@ dependencies = [
  "toml_datetime",
  "winnow 0.6.13",
 ]
+
+[[package]]
+name = "tonic"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3082666a3a6433f7f511c7192923fa1fe07c69332d3c6a2e6bb040b569199d5a"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.21.7",
+ "bytes",
+ "futures-core",
+ "futures-util",
+ "h2",
+ "http",
+ "http-body",
+ "hyper",
+ "hyper-timeout",
+ "percent-encoding",
+ "pin-project 1.1.5",
+ "prost 0.11.9",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "tonic-build"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6fdaae4c2c638bb70fe42803a26fbd6fc6ac8c72f5c59f67ecc2a2dcabf4b07"
+dependencies = [
+ "prettyplease 0.1.25",
+ "proc-macro2",
+ "prost-build 0.11.9",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "tonic-reflection"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0543d7092032041fbeac1f2c84304537553421a11a623c2301b12ef0264862c7"
+dependencies = [
+ "prost 0.11.9",
+ "prost-types 0.11.9",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
+name = "tower"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8fa9be0de6cf49e536ce1851f987bd21a43b771b09473c3549a6c853db37c1c"
+dependencies = [
+ "futures-core",
+ "futures-util",
+ "indexmap 1.9.3",
+ "pin-project 1.1.5",
+ "pin-project-lite 0.2.14",
+ "rand 0.8.5",
+ "slab",
+ "tokio",
+ "tokio-util 0.7.11",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "tower-layer"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
 
 [[package]]
 name = "tower-service"
@@ -8831,7 +9041,7 @@ dependencies = [
 [[package]]
 name = "zgs_seal"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "ethereum-types 0.14.1",
  "tiny-keccak",
@@ -8841,12 +9051,12 @@ dependencies = [
 [[package]]
 name = "zgs_spec"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 
 [[package]]
 name = "zgs_version"
 version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-node.git?rev=96f846073f111adfa31df926be0e4a25e0b85f54#96f846073f111adfa31df926be0e4a25e0b85f54"
+source = "git+https://github.com/0gfoundation/0g-storage-node.git?branch=main#7e62e12012b767020af567f5a0ae6584ae6e055a"
 dependencies = [
  "git-version",
  "target_info",

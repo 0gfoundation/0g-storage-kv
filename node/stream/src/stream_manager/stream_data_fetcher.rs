@@ -1,7 +1,10 @@
 use crate::{stream_manager::skippable, StreamConfig};
 use anyhow::{anyhow, bail, Result};
-use jsonrpsee::http_client::HttpClient;
+use jsonrpsee::core::client::ClientT;
+use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
+use jsonrpsee::rpc_params;
 use kv_types::KVTransaction;
+use serde_json::Value;
 use shared_types::ChunkArray;
 use std::{
     cmp,
@@ -9,9 +12,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use zgs_rpc::ZgsAdminRpcClient;
 use zgs_rpc::ZgsRPCClient;
-use zgs_storage::config::ShardConfig;
 
 use storage_with_stream::{log_store::log_manager::ENTRY_SIZE, Store};
 use task_executor::TaskExecutor;
@@ -19,25 +20,31 @@ use tokio::sync::{
     mpsc::{self, UnboundedSender},
     RwLock,
 };
+use zgs_storage::config::{all_shards_available, ShardConfig};
 
 const RETRY_WAIT_MS: u64 = 1000;
 const ENTRIES_PER_SEGMENT: usize = 1024;
 const MAX_DOWNLOAD_TASK: usize = 5;
 const MAX_RETRY: usize = 5;
 
+#[derive(Clone, Debug)]
+struct LocationCandidate {
+    url: String,
+    shard_config: Option<ShardConfig>,
+}
+
 pub struct StreamDataFetcher {
     config: StreamConfig,
     store: Arc<RwLock<dyn Store>>,
-    clients: Arc<Vec<HttpClient>>,
-    shard_configs: Arc<RwLock<Vec<Option<ShardConfig>>>>,
-    admin_client: Option<HttpClient>,
+    indexer_client: HttpClient,
+    static_node_urls: Vec<String>,
+    zgs_rpc_timeout: u64,
     task_executor: TaskExecutor,
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn download_with_proof(
     clients: Arc<Vec<HttpClient>>,
-    shard_configs: Arc<RwLock<Vec<Option<ShardConfig>>>>,
     client_index: usize,
     tx: Arc<KVTransaction>,
     start_index: usize,
@@ -48,30 +55,7 @@ async fn download_with_proof(
     let mut fail_cnt = 0;
     let mut index = client_index;
     while fail_cnt < clients.len() {
-        // find next
         let seg_index = start_index / ENTRIES_PER_SEGMENT;
-        let flow_seg_index = (tx.start_entry_index as usize + start_index) / ENTRIES_PER_SEGMENT;
-        let mut try_cnt = 0;
-        loop {
-            let configs = shard_configs.read().await;
-            if let Some(shard_config) = configs[index] {
-                if flow_seg_index % shard_config.num_shard == shard_config.shard_id {
-                    break;
-                }
-            }
-            index = (index + 1) % clients.len();
-            try_cnt += 1;
-            if try_cnt >= clients.len() {
-                error!(
-                    "there is no storage nodes hold segment index {:?} of file with root {:?}",
-                    seg_index, tx.data_merkle_root
-                );
-                if let Err(e) = sender.send(Err((start_index, end_index, false))) {
-                    error!("send error: {:?}", e);
-                }
-                return;
-            }
-        }
         debug!(
             "download_with_proof for tx_seq: {}, start_index: {}, end_index {} from client #{}",
             tx.seq, start_index, end_index, index
@@ -140,6 +124,7 @@ async fn download_with_proof(
                     tx.seq, start_index, end_index, index
                 );
                 fail_cnt += 1;
+                index = (index + 1) % clients.len();
                 tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
             }
             Err(e) => {
@@ -148,6 +133,7 @@ async fn download_with_proof(
                     tx.seq, start_index, end_index, index, e
                 );
                 fail_cnt += 1;
+                index = (index + 1) % clients.len();
                 tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
             }
         }
@@ -158,69 +144,146 @@ async fn download_with_proof(
     }
 }
 
-async fn poll_shard_configs(
-    clients: Vec<HttpClient>,
-    shard_configs: Arc<RwLock<Vec<Option<ShardConfig>>>>,
-) {
-    let n = clients.len();
-    loop {
-        for i in 0..n {
-            match clients[i].get_shard_config().await {
-                Ok(shard_config) => {
-                    let mut configs = shard_configs.write().await;
-                    configs[i] = Some(shard_config);
-                }
-                Err(e) => {
-                    debug!("fetch shard config from client #{:?} failed: {:?}", i, e);
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    }
-}
-
 impl StreamDataFetcher {
     pub async fn new(
         config: StreamConfig,
         store: Arc<RwLock<dyn Store>>,
-        clients: Vec<HttpClient>,
-        admin_client: Option<HttpClient>,
+        indexer_url: Option<String>,
+        zgs_nodes: Vec<String>,
+        zgs_rpc_timeout: u64,
         task_executor: TaskExecutor,
     ) -> Result<Self> {
-        let shard_configs = Arc::new(RwLock::new(vec![None; clients.len()]));
-        task_executor.spawn(
-            poll_shard_configs(clients.clone(), shard_configs.clone()),
-            "poll_shard_config",
-        );
+        let indexer_client = match indexer_url {
+            Some(url) if !url.is_empty() => HttpClientBuilder::default()
+                .request_timeout(Duration::from_secs(zgs_rpc_timeout))
+                .build(url)?,
+            _ => HttpClientBuilder::default()
+                .request_timeout(Duration::from_secs(zgs_rpc_timeout))
+                .build("http://127.0.0.1:0")?,
+        };
         Ok(Self {
             config,
             store,
-            clients: Arc::new(clients),
-            shard_configs,
-            admin_client,
+            indexer_client,
+            static_node_urls: zgs_nodes,
+            zgs_rpc_timeout,
             task_executor,
         })
     }
 
-    async fn request_file(&self, tx_seq: u64) -> Result<()> {
-        match self.admin_client.clone() {
-            Some(client) => {
-                let status = client.get_sync_status(tx_seq).await?;
-                debug!(
-                    "zgs node file(tx_seq={:?}) sync status: {:?}",
-                    tx_seq, status
-                );
-                if status.starts_with("unknown") || status.starts_with("Failed") {
-                    debug!("requesting file(tx_seq={:?}) sync", tx_seq);
-                    client.start_sync_file(tx_seq).await?;
-                }
-                Ok(())
-            }
-            None => {
-                debug!("no admin client");
-                Ok(())
+    fn parse_shard_config(config: &Value) -> Option<ShardConfig> {
+        let obj = config.as_object()?;
+        let shard_id = obj
+            .get("shardId")
+            .or_else(|| obj.get("shard_id"))
+            .and_then(|v| v.as_u64())? as usize;
+        let num_shard = obj
+            .get("numShard")
+            .or_else(|| obj.get("num_shard"))
+            .and_then(|v| v.as_u64())? as usize;
+        let config = ShardConfig {
+            shard_id,
+            num_shard,
+        };
+        if config.validate().is_err() {
+            return None;
+        }
+        Some(config)
+    }
+
+    fn select_download_nodes(
+        candidates: Vec<LocationCandidate>,
+        root_hex: &str,
+    ) -> Result<Vec<String>> {
+        let mut urls = Vec::new();
+        let mut with_config = Vec::new();
+        let mut without_config = Vec::new();
+
+        for candidate in candidates {
+            if let Some(config) = candidate.shard_config {
+                with_config.push((candidate.url, config));
+            } else {
+                without_config.push(candidate.url);
             }
         }
+
+        if with_config.is_empty() {
+            urls.extend(without_config);
+            if urls.is_empty() {
+                bail!("indexer returned no locations for root {}", root_hex);
+            }
+            urls.sort();
+            urls.dedup();
+            return Ok(urls);
+        }
+
+        let mut selected_urls = Vec::new();
+        let mut selected_configs = Vec::new();
+        let mut covered = false;
+        for (url, config) in with_config {
+            selected_urls.push(url);
+            selected_configs.push(config);
+            if all_shards_available(selected_configs.clone()) {
+                covered = true;
+                break;
+            }
+        }
+
+        if !covered {
+            bail!(
+                "file not found or shards incomplete, no shard-covered node set for root {}",
+                root_hex
+            );
+        }
+
+        selected_urls.sort();
+        selected_urls.dedup();
+        Ok(selected_urls)
+    }
+
+    async fn fetch_locations(&self, root_hex: String) -> Result<Vec<String>> {
+        if !self.static_node_urls.is_empty() {
+            return Ok(self.static_node_urls.clone());
+        }
+        let locations: Vec<Value> = self
+            .indexer_client
+            .request("indexer_getFileLocations", rpc_params![root_hex.clone()])
+            .await?;
+        let mut candidates = Vec::new();
+        for loc in locations {
+            match loc {
+                Value::String(url) => candidates.push(LocationCandidate {
+                    url,
+                    shard_config: None,
+                }),
+                Value::Object(map) => {
+                    if let Some(url) = map
+                        .get("URL")
+                        .or_else(|| map.get("url"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let shard_config = map.get("config").and_then(Self::parse_shard_config);
+                        candidates.push(LocationCandidate {
+                            url: url.to_string(),
+                            shard_config,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self::select_download_nodes(candidates, &root_hex)
+    }
+
+    fn build_clients(&self, urls: &[String]) -> Result<Vec<HttpClient>> {
+        urls.iter()
+            .map(|url| {
+                HttpClientBuilder::default()
+                    .request_timeout(Duration::from_secs(self.zgs_rpc_timeout))
+                    .build(url)
+                    .map_err(|e| anyhow!("failed to build zgs client {}: {:?}", url, e))
+            })
+            .collect()
     }
 
     fn spawn_download_task(
@@ -230,6 +293,7 @@ impl StreamDataFetcher {
         start_index: usize,
         end_index: usize,
         sender: &UnboundedSender<Result<(), (usize, usize, bool)>>,
+        clients: Arc<Vec<HttpClient>>,
     ) {
         debug!(
             "downloading start_index {:?}, end_index: {:?} from client index: {}",
@@ -238,8 +302,7 @@ impl StreamDataFetcher {
 
         self.task_executor.spawn(
             download_with_proof(
-                self.clients.clone(),
-                self.shard_configs.clone(),
+                clients.clone(),
                 *client_index,
                 tx,
                 start_index,
@@ -251,13 +314,16 @@ impl StreamDataFetcher {
         );
 
         // round robin client
-        *client_index = (*client_index + 1) % self.clients.len();
+        *client_index = (*client_index + 1) % clients.len();
     }
 
     async fn sync_data(&self, tx: &KVTransaction) -> Result<()> {
         if self.store.read().await.check_tx_completed(tx.seq)? {
             return Ok(());
         }
+        let root_hex = format!("{:#x}", tx.data_merkle_root);
+        let urls = self.fetch_locations(root_hex).await?;
+        let clients = Arc::new(self.build_clients(&urls)?);
         let tx_size_in_entry = if tx.size % ENTRY_SIZE as u64 == 0 {
             tx.size / ENTRY_SIZE as u64
         } else {
@@ -294,6 +360,7 @@ impl StreamDataFetcher {
                 start_index,
                 end_index,
                 &sender,
+                clients.clone(),
             );
             task_counter += 1;
         }
@@ -310,6 +377,7 @@ impl StreamDataFetcher {
                                 start_index,
                                 end_index,
                                 &sender,
+                                clients.clone(),
                             );
                         } else {
                             task_counter -= 1;
@@ -324,22 +392,12 @@ impl StreamDataFetcher {
                                     *c += 1;
                                 }
 
-                                if *c == self.clients.len() * MAX_RETRY {
+                                if *c == clients.len() * MAX_RETRY {
                                     bail!(anyhow!(format!("Download segment failed, start_index {:?}, end_index: {:?}", start_index, end_index)));
                                 }
                             }
                             _ => {
                                 failed_tasks.insert(start_index, 1);
-                            }
-                        }
-
-                        match self.request_file(tx.seq).await {
-                            Ok(_) => {}
-                            Err(e) => {
-                                warn!(
-                                    "Failed to request file with tx seq {:?}, error: {}",
-                                    tx.seq, e
-                                );
                             }
                         }
 
@@ -349,6 +407,7 @@ impl StreamDataFetcher {
                             start_index,
                             end_index,
                             &sender,
+                            clients.clone(),
                         );
                     }
                 }

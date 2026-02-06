@@ -1,6 +1,5 @@
 use super::{Client, RuntimeContext};
 use log_entry_sync::{LogSyncConfig, LogSyncEvent, LogSyncManager};
-use rpc::HttpClient;
 use rpc::RPCConfig;
 use std::sync::Arc;
 
@@ -33,8 +32,9 @@ struct LogSyncComponents {
 pub struct ClientBuilder {
     runtime_context: Option<RuntimeContext>,
     store: Option<Arc<RwLock<dyn Store>>>,
-    zgs_clients: Option<Vec<HttpClient>>,
-    admin_client: Option<Option<HttpClient>>,
+    indexer_url: Option<String>,
+    zgs_nodes: Option<Vec<String>>,
+    zgs_rpc_timeout: Option<u64>,
     log_sync: Option<LogSyncComponents>,
 }
 
@@ -71,6 +71,10 @@ impl ClientBuilder {
     }
 
     pub async fn with_rpc(mut self, rpc_config: RPCConfig) -> Result<Self, String> {
+        self.indexer_url.clone_from(&rpc_config.indexer_url);
+        self.zgs_nodes = Some(rpc_config.zgs_nodes.clone());
+        self.zgs_rpc_timeout = Some(rpc_config.zgs_rpc_timeout);
+
         if !rpc_config.enabled {
             return Ok(self);
         }
@@ -84,18 +88,6 @@ impl ClientBuilder {
             store,
         };
 
-        self.zgs_clients = Some(
-            rpc::zgs_clients(&ctx).map_err(|e| format!("Unable to create rpc client: {:?}", e))?,
-        );
-        self.admin_client = Some(if let Some(url) = ctx.config.admin_node_address.clone() {
-            Some(
-                rpc::build_client(&url, ctx.config.zgs_rpc_timeout)
-                    .map_err(|e| format!("Unable to create admin client: {:?}", e))?,
-            )
-        } else {
-            None
-        });
-
         let rpc_handle = rpc::run_server(ctx)
             .await
             .map_err(|e| format!("Unable to start HTTP RPC server: {:?}", e))?;
@@ -108,12 +100,19 @@ impl ClientBuilder {
     pub async fn with_stream(self, config: &StreamConfig) -> Result<Self, String> {
         let executor = require!("stream", self, runtime_context).clone().executor;
         let store = require!("stream", self, store).clone();
-        let zgs_clients = require!("stream", self, zgs_clients).clone();
-        let admin_client = require!("stream", self, admin_client).clone();
-        let (stream_data_fetcher, stream_replayer) =
-            StreamManager::initialize(config, store, zgs_clients, admin_client, executor.clone())
-                .await
-                .map_err(|e| e.to_string())?;
+        let indexer_url = self.indexer_url.clone();
+        let zgs_nodes = require!("stream", self, zgs_nodes).clone();
+        let zgs_rpc_timeout = *require!("stream", self, zgs_rpc_timeout);
+        let (stream_data_fetcher, stream_replayer) = StreamManager::initialize(
+            config,
+            store,
+            indexer_url,
+            zgs_nodes,
+            zgs_rpc_timeout,
+            executor.clone(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         StreamManager::spawn(stream_data_fetcher, stream_replayer, executor)
             .map_err(|e| e.to_string())?;
         Ok(self)

@@ -20,9 +20,9 @@ kv_db_dir = "kv.DB"
 ###                     Log Sync Config Options                     ###
 #######################################################################
 
-blockchain_rpc_endpoint = ""
-log_contract_address = ""
-log_sync_start_block_number = 0
+blockchain_rpc_endpoint = "https://evmrpc-testnet.0g.ai"
+log_contract_address = "0x22E03a6A89B950F1c82ec5e74F8eCa321a105296"
+log_sync_start_block_number = 1
 
 #######################################################################
 ###                     RPC Config Options                          ###
@@ -38,6 +38,7 @@ rpc_listen_address = "0.0.0.0:6789"
 indexer_url = "https://indexer-storage-turbo-testnet.0g.ai"
 # Static ZGS node list (used when indexer_url is empty).
 zgs_node_urls = ""
+
 #######################################################################
 ###                     Misc Config Options                         ###
 #######################################################################

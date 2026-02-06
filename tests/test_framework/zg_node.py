@@ -102,7 +102,7 @@ class ZGNode(BlockchainNode):
             cwd=self._make_dir,
         )
         assert ret.returncode == 0, "Failed to stop 0gchaind via Makefile"
-        shutil.rmtree(os.path.join(self._make_dir, _chain_data_dir()), ignore_errors=True)
+        # shutil.rmtree(os.path.join(self._make_dir, _chain_data_dir()), ignore_errors=True)
         self.running = False
 
     def wait_for_rpc_connection(self):

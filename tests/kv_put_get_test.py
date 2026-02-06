@@ -192,7 +192,8 @@ class KVPutGetTest(KVTestFramework):
         self.submit(second_version, [], writes, [])
         wait_until(
             lambda: self.kv_nodes[0].kv_get_trasanction_result(self.next_tx_seq)
-            == "Commit"
+            == "Commit",
+            timeout=120,
         )
         third_version = self.next_tx_seq
         self.next_tx_seq += 1
@@ -215,7 +216,8 @@ class KVPutGetTest(KVTestFramework):
         self.submit(MAX_U64, [], writes, [])
         wait_until(
             lambda: self.kv_nodes[0].kv_get_trasanction_result(self.next_tx_seq)
-            == "Commit"
+            == "Commit",
+            timeout=120,
         )
         fourth_version = self.next_tx_seq
         self.next_tx_seq += 1

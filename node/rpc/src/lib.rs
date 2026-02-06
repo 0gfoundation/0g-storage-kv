@@ -37,14 +37,6 @@ pub fn build_client(url: &String, timeout: u64) -> Result<HttpClient, Box<dyn Er
         .build(url)?)
 }
 
-pub fn zgs_clients(ctx: &Context) -> Result<Vec<HttpClient>, Box<dyn Error>> {
-    ctx.config
-        .zgs_nodes
-        .iter()
-        .map(|url| build_client(url, ctx.config.zgs_rpc_timeout))
-        .collect()
-}
-
 pub async fn run_server(ctx: Context) -> Result<HttpServerHandle, Box<dyn Error>> {
     let server = HttpServerBuilder::default()
         .max_response_body_size(ctx.config.max_response_body_in_bytes)
