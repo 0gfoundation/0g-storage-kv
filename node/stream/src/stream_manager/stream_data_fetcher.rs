@@ -191,7 +191,10 @@ impl StreamDataFetcher {
         Some(config)
     }
 
-    fn select_download_nodes(candidates: Vec<LocationCandidate>, root_hex: &str) -> Result<Vec<String>> {
+    fn select_download_nodes(
+        candidates: Vec<LocationCandidate>,
+        root_hex: &str,
+    ) -> Result<Vec<String>> {
         let mut urls = Vec::new();
         let mut with_config = Vec::new();
         let mut without_config = Vec::new();
