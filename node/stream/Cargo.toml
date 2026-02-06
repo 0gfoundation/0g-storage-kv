@@ -20,8 +20,8 @@ ethers = { version = "^2", features = ["ws"] }
 serde_json = "1.0.127"
 storage_with_stream = { path = "../storage_with_stream" }
 rpc = {path = "../rpc"}
-zgs_rpc = { git = "https://github.com/0gfoundation/0g-storage-node.git", rev = "96f846073f111adfa31df926be0e4a25e0b85f54", package = "rpc" }
-zgs_storage = { git = "https://github.com/0gfoundation/0g-storage-node.git", rev = "96f846073f111adfa31df926be0e4a25e0b85f54", package = "storage" }
+zgs_rpc = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main", package = "rpc" }
+zgs_storage = { git = "https://github.com/0gfoundation/0g-storage-node.git", branch = "main", package = "storage" }
 contract-interface = { workspace = true }
 rusqlite = { version = "0.28.0", features = ["bundled"] }
 tracing = "0.1.35"
