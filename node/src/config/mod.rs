@@ -40,6 +40,9 @@ build_config! {
     (max_response_body_in_bytes, (u32), 1024 * 1024 * 30) // 30MB
     (zgs_rpc_timeout, (u64), 5) // 5 seconds
 
+    // encryption
+    (encryption_key, (String), "".to_string())
+
     // db
     (db_dir, (String), "db".to_string())
     (merkle_node_cache_capacity, (usize), 32 * 1024 * 1024)

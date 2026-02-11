@@ -8,6 +8,7 @@ from utility.kv import (
     to_stream_id,
     create_kv_data,
     rand_write,
+    encrypt_kv_data,
 )
 from utility.submission import submit_data
 from kv_utility.submission import create_submission
@@ -57,6 +58,8 @@ class KVPutGetTest(KVTestFramework):
         self.data = {}
         # write empty stream
         self.write_streams()
+        # test encrypted put/get
+        self.write_streams_encrypted()
 
     def submit(
         self,
@@ -228,6 +231,95 @@ class KVPutGetTest(KVTestFramework):
         for stream_id_key, value in self.data.items():
             stream_id, key = stream_id_key.split(",")
             self.kv_nodes[0].check_equal(stream_id, key, value)
+
+    def write_streams_encrypted(self):
+        """Test encrypted KV put/get with decrypt-before-store.
+
+        Sets up a second KV node with an encryption key, submits encrypted KV
+        data, and verifies the node decrypts and serves the correct plaintext.
+        """
+        encryption_key_hex = (
+            "4242424242424242424242424242424242424242424242424242424242424242"
+        )
+        encryption_key = bytes.fromhex(encryption_key_hex)
+        encrypted_stream_id = to_stream_id(200)
+
+        # Setup a second KV node with encryption enabled
+        self.setup_kv_node(1, [encrypted_stream_id], updated_config={
+            "zgs_node_urls": ",".join([node.rpc_url for node in self.nodes]),
+            "encryption_key": encryption_key_hex,
+        })
+
+        # Create writes targeting the encrypted stream
+        writes = [
+            rand_write(stream_id=encrypted_stream_id, size=100) for _ in range(3)
+        ]
+
+        # Build KV binary data, then encrypt it
+        chunk_data, tags = create_kv_data(MAX_U64, [], writes, [])
+        encrypted_data = encrypt_kv_data(encryption_key, chunk_data)
+
+        # Submit encrypted data to blockchain and storage nodes
+        submissions, data_root = create_submission(encrypted_data, tags)
+        self.contract.submit(submissions, tx_prarams=TX_PARAMS)
+        wait_until(
+            lambda: self.contract.num_submissions() == self.next_tx_seq + 1
+        )
+
+        for client in self.nodes:
+            wait_until(lambda: client.zgs_get_file_info(data_root) is not None)
+            submit_data(client, encrypted_data)
+            wait_until(
+                lambda: client.zgs_get_file_info(data_root)["finalized"]
+            )
+
+        # Wait for encrypted KV node to download, decrypt, and replay
+        wait_until(
+            lambda: self.kv_nodes[1].kv_get_trasanction_result(self.next_tx_seq)
+            == "Commit",
+            timeout=120,
+        )
+        self.next_tx_seq += 1
+
+        # Verify decrypted values match original plaintext
+        for write in writes:
+            self.kv_nodes[1].check_equal(write[0], write[1], write[3])
+
+        # Overwrite with new encrypted data
+        overwrite_writes = [
+            rand_write(stream_id=encrypted_stream_id, key=w[1], size=150)
+            for w in writes
+        ]
+        chunk_data2, tags2 = create_kv_data(
+            self.next_tx_seq - 1, [], overwrite_writes, []
+        )
+        encrypted_data2 = encrypt_kv_data(encryption_key, chunk_data2)
+
+        submissions2, data_root2 = create_submission(encrypted_data2, tags2)
+        self.contract.submit(submissions2, tx_prarams=TX_PARAMS)
+        wait_until(
+            lambda: self.contract.num_submissions() == self.next_tx_seq + 1
+        )
+
+        for client in self.nodes:
+            wait_until(
+                lambda: client.zgs_get_file_info(data_root2) is not None
+            )
+            submit_data(client, encrypted_data2)
+            wait_until(
+                lambda: client.zgs_get_file_info(data_root2)["finalized"]
+            )
+
+        wait_until(
+            lambda: self.kv_nodes[1].kv_get_trasanction_result(self.next_tx_seq)
+            == "Commit",
+            timeout=120,
+        )
+        self.next_tx_seq += 1
+
+        # Verify overwritten values
+        for write in overwrite_writes:
+            self.kv_nodes[1].check_equal(write[0], write[1], write[3])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from enum import Enum
+import os
 import random
-
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 class AccessControlOps(Enum):
     GRANT_ADMIN_ROLE = 0x00
@@ -206,3 +207,24 @@ def create_kv_data(version, reads, writes, access_controls):
     tags = sorted(tags)
     tags = STREAM_DOMAIN + bytes.fromhex("".join(tags))
     return data, tags
+
+
+def encrypt_kv_data(key, plaintext):
+    """Encrypt KV binary data with AES-256-CTR, prepending encryption header.
+
+    Matches the SDK's encryption format:
+      header = version (1 byte, 0x01) + nonce (16 bytes) = 17 bytes
+      ciphertext = AES-256-CTR(key, nonce, plaintext)
+
+    key: 32-byte encryption key (bytes)
+    plaintext: raw KV binary data (bytes)
+    Returns: header + ciphertext
+    """
+    
+
+    nonce = os.urandom(16)
+    header = b"\x01" + nonce
+    cipher = Cipher(algorithms.AES(key), modes.CTR(nonce))
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+    return header + ciphertext

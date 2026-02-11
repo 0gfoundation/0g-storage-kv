@@ -6,4 +6,5 @@ use ethereum_types::H256;
 pub struct Config {
     pub stream_ids: Vec<H256>,
     pub stream_set: HashSet<H256>,
+    pub encryption_key: Option<[u8; 32]>,
 }

@@ -19,6 +19,8 @@ use storage_with_stream::AccessControlOps;
 use storage_with_stream::Store;
 use tokio::sync::RwLock;
 
+use zg_storage_client::transfer::encryption::ENCRYPTION_HEADER_SIZE;
+
 use super::RETRY_WAIT_MS;
 
 const MAX_LOAD_ENTRY_SIZE: u64 = 10;
@@ -509,6 +511,10 @@ impl StreamReplayer {
             return Ok(ReplayResult::DataUnavailable);
         }
         let mut stream_reader = StreamReader::new(self.store.clone(), tx);
+        // Skip encryption header if encryption is configured
+        if self.config.encryption_key.is_some() {
+            stream_reader.skip(ENCRYPTION_HEADER_SIZE as u64).await?;
+        }
         // parse and validate
         let version = self.parse_version(&mut stream_reader).await?;
         let stream_read_set = match self.parse_stream_read_set(&mut stream_reader).await {
@@ -750,6 +756,341 @@ impl StreamReplayer {
                     check_replay_progress = true;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared_types::ChunkArray;
+    use storage_with_stream::StoreManager;
+    use zg_storage_client::transfer::encryption::{crypt_at, EncryptionHeader};
+
+    /// Build KV binary format data with one write entry.
+    /// Format: version(8) + read_set(4) + write_set_count(4) + [stream_id(32) + key_len(3) + key + data_len(8)] + value_data + access_control(4)
+    fn build_kv_data(stream_id: H256, key: &[u8], value: &[u8]) -> Vec<u8> {
+        let mut data = Vec::new();
+        // Version: u64 BE = 1
+        data.extend_from_slice(&1u64.to_be_bytes());
+        // Read set count: u32 BE = 0
+        data.extend_from_slice(&0u32.to_be_bytes());
+        // Write set count: u32 BE = 1
+        data.extend_from_slice(&1u32.to_be_bytes());
+        // Write metadata:
+        //   stream_id: 32 bytes
+        data.extend_from_slice(stream_id.as_bytes());
+        //   key_len: 3 bytes (last 3 bytes of u64 BE)
+        let key_len_bytes = (key.len() as u64).to_be_bytes();
+        data.extend_from_slice(&key_len_bytes[5..8]);
+        //   key
+        data.extend_from_slice(key);
+        //   data_len: u64 BE
+        data.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        // Write data
+        data.extend_from_slice(value);
+        // Access control count: u32 BE = 0
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data
+    }
+
+    /// Pad data to 256-byte entry boundary.
+    fn pad_to_entries(data: &[u8]) -> Vec<u8> {
+        let padded_len = ((data.len() + ENTRY_SIZE - 1) / ENTRY_SIZE) * ENTRY_SIZE;
+        let mut padded = data.to_vec();
+        padded.resize(padded_len, 0);
+        padded
+    }
+
+    /// Create a memorydb store with a single tx containing the given data.
+    /// Returns the store and the tx for use in tests.
+    async fn setup_store_with_data(
+        data: &[u8],
+        stream_id: H256,
+    ) -> (Arc<RwLock<dyn Store>>, KVTransaction) {
+        let store_manager = StoreManager::memorydb().await.unwrap();
+        let store: Arc<RwLock<dyn Store>> = Arc::new(RwLock::new(store_manager));
+        let padded = pad_to_entries(data);
+        let tx = KVTransaction {
+            stream_ids: vec![stream_id],
+            sender: H160::zero(),
+            data_merkle_root: H256::zero(),
+            merkle_nodes: vec![(1, H256::zero())],
+            start_entry_index: 1, // avoid flow store batch-0 offset-0 issue
+            size: data.len() as u64,
+            seq: 0,
+        };
+        let tx_hash = tx.hash();
+        {
+            let mut s = store.write().await;
+            s.put_tx(tx.clone()).unwrap();
+            assert!(s
+                .put_chunks_with_tx_hash(
+                    0,
+                    tx_hash,
+                    ChunkArray {
+                        data: padded,
+                        start_index: 0, // relative to tx start
+                    },
+                    None,
+                )
+                .unwrap());
+            assert!(s.finalize_tx_with_hash(0, tx_hash).unwrap());
+        }
+        (store, tx)
+    }
+
+    #[tokio::test]
+    async fn test_stream_reader_plain() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+
+        let (store, tx) = setup_store_with_data(&kv_data, stream_id).await;
+
+        let mut reader = StreamReader::new(store.clone(), &tx);
+
+        // Read version
+        let version = u64::from_be_bytes(
+            reader.next(VERSION_SIZE).await.unwrap().try_into().unwrap(),
+        );
+        assert_eq!(version, 1);
+
+        // Read read-set count
+        let read_set_count = u32::from_be_bytes(
+            reader
+                .next(SET_LEN_SIZE)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(read_set_count, 0);
+
+        // Read write-set count
+        let write_set_count = u32::from_be_bytes(
+            reader
+                .next(SET_LEN_SIZE)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(write_set_count, 1);
+
+        // Read stream_id
+        let sid_bytes = reader.next(STREAM_ID_SIZE).await.unwrap();
+        assert_eq!(H256::from_slice(&sid_bytes), stream_id);
+
+        // Read key_len (3-byte big-endian)
+        let mut key_len_padded = vec![0u8; 5];
+        key_len_padded.extend_from_slice(&reader.next(STREAM_KEY_LEN_SIZE).await.unwrap());
+        let key_len = u64::from_be_bytes(key_len_padded.try_into().unwrap());
+        assert_eq!(key_len, 5);
+
+        // Read key
+        let read_key = reader.next(key_len).await.unwrap();
+        assert_eq!(read_key, key.to_vec());
+
+        // Read data_len
+        let data_size = u64::from_be_bytes(
+            reader
+                .next(DATA_LEN_SIZE)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(data_size, value.len() as u64);
+
+        // Read value data
+        let read_value = reader.next(data_size).await.unwrap();
+        assert_eq!(read_value, value.to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_stream_reader_encrypted_header_skip() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+
+        // Prepend encryption header (simulating decrypt-before-store)
+        let header = EncryptionHeader::new();
+        let mut stored_data = header.to_bytes().to_vec();
+        stored_data.extend_from_slice(&kv_data);
+
+        let (store, tx) = setup_store_with_data(&stored_data, stream_id).await;
+        let mut reader = StreamReader::new(store.clone(), &tx);
+
+        // Skip encryption header
+        reader.skip(ENCRYPTION_HEADER_SIZE as u64).await.unwrap();
+
+        // Should now read the KV data correctly
+        let version = u64::from_be_bytes(
+            reader.next(VERSION_SIZE).await.unwrap().try_into().unwrap(),
+        );
+        assert_eq!(version, 1);
+
+        let read_set_count = u32::from_be_bytes(
+            reader
+                .next(SET_LEN_SIZE)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(read_set_count, 0);
+
+        let write_set_count = u32::from_be_bytes(
+            reader
+                .next(SET_LEN_SIZE)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(write_set_count, 1);
+
+        // Read stream_id
+        let sid_bytes = reader.next(STREAM_ID_SIZE).await.unwrap();
+        assert_eq!(H256::from_slice(&sid_bytes), stream_id);
+    }
+
+    #[tokio::test]
+    async fn test_replay_plain_data() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+
+        let (store, tx) = setup_store_with_data(&kv_data, stream_id).await;
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: None,
+        };
+
+        let replayer = StreamReplayer::new(config, store).await.unwrap();
+        let result = replayer.replay(&tx).await.unwrap();
+
+        match result {
+            ReplayResult::Commit(seq, write_set, _acl) => {
+                assert_eq!(seq, 0);
+                assert_eq!(write_set.stream_writes.len(), 1);
+                let sw = &write_set.stream_writes[0];
+                assert_eq!(sw.stream_id, stream_id);
+                assert_eq!(*sw.key, key.to_vec());
+                // tx starts at entry 1 = byte 256
+                // metadata before value: version(8) + read_count(4) + write_count(4)
+                //   + stream_id(32) + key_len(3) + key(5) + data_len(8) = 64 bytes
+                // value starts at byte 256 + 64 = 320
+                assert_eq!(sw.start_index, 320);
+                assert_eq!(sw.end_index, 320 + value.len() as u64);
+            }
+            _ => panic!("expected Commit result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replay_encrypted_data() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+
+        // Simulate decrypt-before-store: header + plaintext KV data
+        let header = EncryptionHeader::new();
+        let mut stored_data = header.to_bytes().to_vec();
+        stored_data.extend_from_slice(&kv_data);
+
+        let (store, tx) = setup_store_with_data(&stored_data, stream_id).await;
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: Some([0x42u8; 32]),
+        };
+
+        let replayer = StreamReplayer::new(config, store).await.unwrap();
+        let result = replayer.replay(&tx).await.unwrap();
+
+        match result {
+            ReplayResult::Commit(seq, write_set, _acl) => {
+                assert_eq!(seq, 0);
+                assert_eq!(write_set.stream_writes.len(), 1);
+                let sw = &write_set.stream_writes[0];
+                assert_eq!(sw.stream_id, stream_id);
+                assert_eq!(*sw.key, key.to_vec());
+                // tx starts at entry 1 = byte 256
+                // header(17) skipped, then metadata(64) before value
+                // value starts at byte 256 + 17 + 64 = 337
+                assert_eq!(sw.start_index, 337);
+                assert_eq!(sw.end_index, 337 + value.len() as u64);
+            }
+            _ => panic!("expected Commit result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encrypt_decrypt_store_roundtrip() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+        let encryption_key = [0x42u8; 32];
+
+        // Encrypt the KV data (simulating what uploader does)
+        let header = EncryptionHeader::new();
+        let mut encrypted = kv_data.clone();
+        crypt_at(&encryption_key, &header.nonce, 0, &mut encrypted);
+        assert_ne!(encrypted, kv_data, "encrypted should differ from plaintext");
+
+        // Decrypt (simulating what data fetcher does before storing)
+        let mut decrypted = encrypted.clone();
+        crypt_at(&encryption_key, &header.nonce, 0, &mut decrypted);
+        assert_eq!(decrypted, kv_data, "decrypted should match original");
+
+        // Store: header bytes (unchanged) + decrypted plaintext
+        let mut stored_data = header.to_bytes().to_vec();
+        stored_data.extend_from_slice(&decrypted);
+
+        let (store, tx) = setup_store_with_data(&stored_data, stream_id).await;
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: Some(encryption_key),
+        };
+
+        let replayer = StreamReplayer::new(config, store.clone()).await.unwrap();
+        let result = replayer.replay(&tx).await.unwrap();
+
+        match result {
+            ReplayResult::Commit(seq, write_set, _acl) => {
+                assert_eq!(seq, 0);
+                assert_eq!(write_set.stream_writes.len(), 1);
+                let sw = &write_set.stream_writes[0];
+                assert_eq!(sw.stream_id, stream_id);
+                assert_eq!(*sw.key, key.to_vec());
+
+                // Read the actual value bytes from the flow store
+                let start_entry = sw.start_index / ENTRY_SIZE as u64;
+                let end_entry = (sw.end_index + ENTRY_SIZE as u64 - 1) / ENTRY_SIZE as u64;
+                let chunk = store
+                    .read()
+                    .await
+                    .get_chunk_by_flow_index(start_entry, end_entry - start_entry)
+                    .unwrap()
+                    .unwrap();
+                let offset = (sw.start_index % ENTRY_SIZE as u64) as usize;
+                let len = (sw.end_index - sw.start_index) as usize;
+                let stored_value = &chunk.data[offset..offset + len];
+                assert_eq!(stored_value, value, "stored value should match original");
+            }
+            _ => panic!("expected Commit result"),
         }
     }
 }
