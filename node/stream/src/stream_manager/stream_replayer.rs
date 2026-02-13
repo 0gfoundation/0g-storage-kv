@@ -852,31 +852,18 @@ mod tests {
         let mut reader = StreamReader::new(store.clone(), &tx);
 
         // Read version
-        let version = u64::from_be_bytes(
-            reader.next(VERSION_SIZE).await.unwrap().try_into().unwrap(),
-        );
+        let version =
+            u64::from_be_bytes(reader.next(VERSION_SIZE).await.unwrap().try_into().unwrap());
         assert_eq!(version, 1);
 
         // Read read-set count
-        let read_set_count = u32::from_be_bytes(
-            reader
-                .next(SET_LEN_SIZE)
-                .await
-                .unwrap()
-                .try_into()
-                .unwrap(),
-        );
+        let read_set_count =
+            u32::from_be_bytes(reader.next(SET_LEN_SIZE).await.unwrap().try_into().unwrap());
         assert_eq!(read_set_count, 0);
 
         // Read write-set count
-        let write_set_count = u32::from_be_bytes(
-            reader
-                .next(SET_LEN_SIZE)
-                .await
-                .unwrap()
-                .try_into()
-                .unwrap(),
-        );
+        let write_set_count =
+            u32::from_be_bytes(reader.next(SET_LEN_SIZE).await.unwrap().try_into().unwrap());
         assert_eq!(write_set_count, 1);
 
         // Read stream_id
@@ -928,29 +915,16 @@ mod tests {
         reader.skip(ENCRYPTION_HEADER_SIZE as u64).await.unwrap();
 
         // Should now read the KV data correctly
-        let version = u64::from_be_bytes(
-            reader.next(VERSION_SIZE).await.unwrap().try_into().unwrap(),
-        );
+        let version =
+            u64::from_be_bytes(reader.next(VERSION_SIZE).await.unwrap().try_into().unwrap());
         assert_eq!(version, 1);
 
-        let read_set_count = u32::from_be_bytes(
-            reader
-                .next(SET_LEN_SIZE)
-                .await
-                .unwrap()
-                .try_into()
-                .unwrap(),
-        );
+        let read_set_count =
+            u32::from_be_bytes(reader.next(SET_LEN_SIZE).await.unwrap().try_into().unwrap());
         assert_eq!(read_set_count, 0);
 
-        let write_set_count = u32::from_be_bytes(
-            reader
-                .next(SET_LEN_SIZE)
-                .await
-                .unwrap()
-                .try_into()
-                .unwrap(),
-        );
+        let write_set_count =
+            u32::from_be_bytes(reader.next(SET_LEN_SIZE).await.unwrap().try_into().unwrap());
         assert_eq!(write_set_count, 1);
 
         // Read stream_id

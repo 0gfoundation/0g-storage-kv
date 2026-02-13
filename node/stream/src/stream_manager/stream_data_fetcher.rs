@@ -43,10 +43,7 @@ pub struct StreamDataFetcher {
     task_executor: TaskExecutor,
 }
 
-async fn download_with_proof(
-    params: DownloadTaskParams,
-    store: Arc<RwLock<dyn Store>>,
-) {
+async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn Store>>) {
     let DownloadTaskParams {
         ctx,
         tx,
@@ -217,10 +214,8 @@ impl StreamDataFetcher {
         );
 
         let store = self.store.clone();
-        self.task_executor.spawn(
-            download_with_proof(params, store),
-            "download segment",
-        );
+        self.task_executor
+            .spawn(download_with_proof(params, store), "download segment");
     }
 
     async fn sync_data(&self, tx: &KVTransaction) -> Result<()> {
@@ -282,9 +277,7 @@ impl StreamDataFetcher {
         let mut task_counter = 0;
         let (sender, mut rx) = mpsc::unbounded_channel();
 
-        for i in
-            (start_entry..tx_size_in_entry).step_by(ENTRIES_PER_SEGMENT * MAX_DOWNLOAD_TASK)
-        {
+        for i in (start_entry..tx_size_in_entry).step_by(ENTRIES_PER_SEGMENT * MAX_DOWNLOAD_TASK) {
             let tasks_end_index = cmp::min(
                 tx_size_in_entry,
                 i + (ENTRIES_PER_SEGMENT * MAX_DOWNLOAD_TASK) as u64,
@@ -320,8 +313,7 @@ impl StreamDataFetcher {
                 match ret {
                     Ok(_) => {
                         if let Some((start_index, end_index)) = pending_entries.pop_front() {
-                            let segment_index =
-                                start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+                            let segment_index = start_index as u64 / ENTRIES_PER_SEGMENT as u64;
                             self.spawn_download_task(DownloadTaskParams {
                                 ctx: ctx.clone(),
                                 tx: tx.clone(),
@@ -352,8 +344,7 @@ impl StreamDataFetcher {
                             }
                         }
 
-                        let segment_index =
-                            start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+                        let segment_index = start_index as u64 / ENTRIES_PER_SEGMENT as u64;
                         self.spawn_download_task(DownloadTaskParams {
                             ctx: ctx.clone(),
                             tx: tx.clone(),
