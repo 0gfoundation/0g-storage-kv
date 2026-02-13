@@ -1,10 +1,6 @@
 use crate::{stream_manager::skippable, StreamConfig};
 use anyhow::{anyhow, bail, Result};
-use jsonrpsee::core::client::ClientT;
-use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
-use jsonrpsee::rpc_params;
 use kv_types::KVTransaction;
-use serde_json::Value;
 use shared_types::ChunkArray;
 use std::{
     cmp,
@@ -12,7 +8,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use zgs_rpc::ZgsRPCClient;
+use zg_storage_client::common::shard::select;
+use zg_storage_client::indexer::client::IndexerClient;
+use zg_storage_client::node::client_zgs::ZgsClient;
+use zg_storage_client::node::types::{FileInfo, Transaction as SdkTransaction};
+use zg_storage_client::transfer::downloader::DownloadContext;
 
 use storage_with_stream::{log_store::log_manager::ENTRY_SIZE, Store};
 use task_executor::TaskExecutor;
@@ -20,75 +20,57 @@ use tokio::sync::{
     mpsc::{self, UnboundedSender},
     RwLock,
 };
-use zgs_storage::config::{all_shards_available, ShardConfig};
 
 const RETRY_WAIT_MS: u64 = 1000;
 const ENTRIES_PER_SEGMENT: usize = 1024;
 const MAX_DOWNLOAD_TASK: usize = 5;
 const MAX_RETRY: usize = 5;
 
-#[derive(Clone, Debug)]
-struct LocationCandidate {
-    url: String,
-    shard_config: Option<ShardConfig>,
+struct DownloadTaskParams {
+    ctx: Arc<DownloadContext>,
+    tx: Arc<KVTransaction>,
+    segment_index: u64,
+    start_entry: usize,
+    end_entry: usize,
+    sender: UnboundedSender<Result<(), (usize, usize, bool)>>,
 }
 
 pub struct StreamDataFetcher {
     config: StreamConfig,
     store: Arc<RwLock<dyn Store>>,
-    indexer_client: HttpClient,
-    static_node_urls: Vec<String>,
-    zgs_rpc_timeout: u64,
+    indexer_client: Option<IndexerClient>,
+    static_clients: Vec<ZgsClient>,
     task_executor: TaskExecutor,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn download_with_proof(
-    clients: Arc<Vec<HttpClient>>,
-    client_index: usize,
-    tx: Arc<KVTransaction>,
-    start_index: usize,
-    end_index: usize,
-    store: Arc<RwLock<dyn Store>>,
-    sender: UnboundedSender<Result<(), (usize, usize, bool)>>,
-) {
+async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn Store>>) {
+    let DownloadTaskParams {
+        ctx,
+        tx,
+        segment_index,
+        start_entry,
+        end_entry,
+        sender,
+    } = params;
+
     let mut fail_cnt = 0;
-    let mut index = client_index;
-    while fail_cnt < clients.len() {
-        let seg_index = start_index / ENTRIES_PER_SEGMENT;
+    while fail_cnt < MAX_RETRY {
         debug!(
-            "download_with_proof for tx_seq: {}, start_index: {}, end_index {} from client #{}",
-            tx.seq, start_index, end_index, index
+            "download_with_proof for tx_seq: {}, segment: {}, entries: [{}, {}) attempt {}",
+            tx.seq, segment_index, start_entry, end_entry, fail_cnt
         );
-        match clients[index]
-            .download_segment_with_proof_by_tx_seq(tx.seq, seg_index)
-            .await
-        {
-            Ok(Some(segment)) => {
-                if segment.data.len() % ENTRY_SIZE != 0
-                    || segment.data.len() / ENTRY_SIZE != end_index - start_index
+
+        match ctx.download_segment_padded(segment_index, true).await {
+            Ok(data) => {
+                if data.len() % ENTRY_SIZE != 0
+                    || data.len() / ENTRY_SIZE != end_entry - start_entry
                 {
-                    debug!("invalid data length");
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
-                        error!("send error: {:?}", e);
-                    }
-
-                    return;
-                }
-
-                if segment.root != tx.data_merkle_root {
-                    debug!("invalid file root");
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
-                        error!("send error: {:?}", e);
-                    }
-
-                    return;
-                }
-
-                if let Err(e) = segment.validate(ENTRIES_PER_SEGMENT) {
-                    debug!("validate segment with error: {:?}", e);
-
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
+                    debug!(
+                        "invalid data length: got {} entries, expected {}",
+                        data.len() / ENTRY_SIZE,
+                        end_entry - start_entry
+                    );
+                    if let Err(e) = sender.send(Err((start_entry, end_entry, true))) {
                         error!("send error: {:?}", e);
                     }
                     return;
@@ -98,49 +80,54 @@ async fn download_with_proof(
                     tx.seq,
                     tx.hash(),
                     ChunkArray {
-                        data: segment.data,
-                        start_index: (segment.index * ENTRIES_PER_SEGMENT) as u64,
+                        data,
+                        start_index: segment_index * ENTRIES_PER_SEGMENT as u64,
                     },
                     None,
                 ) {
                     debug!("put segment with error: {:?}", e);
-
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
+                    if let Err(e) = sender.send(Err((start_entry, end_entry, true))) {
                         error!("send error: {:?}", e);
                     }
                     return;
                 }
 
-                debug!("download start_index {:?} successful", start_index);
+                debug!("download segment {} successful", segment_index);
                 if let Err(e) = sender.send(Ok(())) {
                     error!("send error: {:?}", e);
                 }
-
                 return;
-            }
-            Ok(None) => {
-                debug!(
-                    "tx_seq {}, start_index {}, end_index {}, client #{} response is none",
-                    tx.seq, start_index, end_index, index
-                );
-                fail_cnt += 1;
-                index = (index + 1) % clients.len();
-                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
             }
             Err(e) => {
                 warn!(
-                    "tx_seq {}, start_index {}, end_index {}, client #{} response error: {:?}",
-                    tx.seq, start_index, end_index, index, e
+                    "tx_seq {}, segment {}, download error: {:?}",
+                    tx.seq, segment_index, e
                 );
                 fail_cnt += 1;
-                index = (index + 1) % clients.len();
                 tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
             }
         }
     }
 
-    if let Err(e) = sender.send(Err((start_index, end_index, false))) {
+    if let Err(e) = sender.send(Err((start_entry, end_entry, false))) {
         error!("send error: {:?}", e);
+    }
+}
+
+/// Convert a KVTransaction to an SDK FileInfo for use with DownloadContext.
+fn kv_tx_to_file_info(tx: &KVTransaction) -> FileInfo {
+    FileInfo {
+        tx: SdkTransaction {
+            stream_ids: vec![],
+            data: vec![],
+            data_merkle_root: tx.data_merkle_root,
+            start_entry_index: tx.start_entry_index,
+            size: tx.size,
+            seq: tx.seq,
+        },
+        finalized: true,
+        is_cached: false,
+        uploaded_seg_num: 0,
     }
 }
 
@@ -153,190 +140,144 @@ impl StreamDataFetcher {
         zgs_rpc_timeout: u64,
         task_executor: TaskExecutor,
     ) -> Result<Self> {
+        // Initialize SDK's global RPC config with the KV's timeout setting
+        zg_storage_client::common::options::init_global_config(
+            None,
+            None,
+            false,
+            5,
+            Duration::from_secs(5),
+            Duration::from_secs(zgs_rpc_timeout),
+        )
+        .await?;
+
         let indexer_client = match indexer_url {
-            Some(url) if !url.is_empty() => HttpClientBuilder::default()
-                .request_timeout(Duration::from_secs(zgs_rpc_timeout))
-                .build(url)?,
-            _ => HttpClientBuilder::default()
-                .request_timeout(Duration::from_secs(zgs_rpc_timeout))
-                .build("http://127.0.0.1:0")?,
+            Some(url) if !url.is_empty() => Some(IndexerClient::new(&url).await?),
+            _ => None,
         };
+
+        let mut static_clients = Vec::new();
+        for url in &zgs_nodes {
+            static_clients.push(ZgsClient::new(url).await?);
+        }
+
         Ok(Self {
             config,
             store,
             indexer_client,
-            static_node_urls: zgs_nodes,
-            zgs_rpc_timeout,
+            static_clients,
             task_executor,
         })
     }
 
-    fn parse_shard_config(config: &Value) -> Option<ShardConfig> {
-        let obj = config.as_object()?;
-        let shard_id = obj
-            .get("shardId")
-            .or_else(|| obj.get("shard_id"))
-            .and_then(|v| v.as_u64())? as usize;
-        let num_shard = obj
-            .get("numShard")
-            .or_else(|| obj.get("num_shard"))
-            .and_then(|v| v.as_u64())? as usize;
-        let config = ShardConfig {
-            shard_id,
-            num_shard,
-        };
-        if config.validate().is_err() {
-            return None;
-        }
-        Some(config)
-    }
-
-    fn select_download_nodes(
-        candidates: Vec<LocationCandidate>,
-        root_hex: &str,
-    ) -> Result<Vec<String>> {
-        let mut urls = Vec::new();
-        let mut with_config = Vec::new();
-        let mut without_config = Vec::new();
-
-        for candidate in candidates {
-            if let Some(config) = candidate.shard_config {
-                with_config.push((candidate.url, config));
-            } else {
-                without_config.push(candidate.url);
-            }
+    async fn fetch_clients(&self, root: ethers::types::H256) -> Result<Vec<ZgsClient>> {
+        if !self.static_clients.is_empty() {
+            return Ok(self.static_clients.clone());
         }
 
-        if with_config.is_empty() {
-            urls.extend(without_config);
-            if urls.is_empty() {
-                bail!("indexer returned no locations for root {}", root_hex);
-            }
-            urls.sort();
-            urls.dedup();
-            return Ok(urls);
-        }
-
-        let mut selected_urls = Vec::new();
-        let mut selected_configs = Vec::new();
-        let mut covered = false;
-        for (url, config) in with_config {
-            selected_urls.push(url);
-            selected_configs.push(config);
-            if all_shards_available(selected_configs.clone()) {
-                covered = true;
-                break;
-            }
-        }
-
-        if !covered {
-            bail!(
-                "file not found or shards incomplete, no shard-covered node set for root {}",
-                root_hex
-            );
-        }
-
-        selected_urls.sort();
-        selected_urls.dedup();
-        Ok(selected_urls)
-    }
-
-    async fn fetch_locations(&self, root_hex: String) -> Result<Vec<String>> {
-        if !self.static_node_urls.is_empty() {
-            return Ok(self.static_node_urls.clone());
-        }
-        let locations: Vec<Value> = self
+        let indexer = self
             .indexer_client
-            .request("indexer_getFileLocations", rpc_params![root_hex.clone()])
-            .await?;
-        let mut candidates = Vec::new();
-        for loc in locations {
-            match loc {
-                Value::String(url) => candidates.push(LocationCandidate {
-                    url,
-                    shard_config: None,
-                }),
-                Value::Object(map) => {
-                    if let Some(url) = map
-                        .get("URL")
-                        .or_else(|| map.get("url"))
-                        .and_then(|v| v.as_str())
-                    {
-                        let shard_config = map.get("config").and_then(Self::parse_shard_config);
-                        candidates.push(LocationCandidate {
-                            url: url.to_string(),
-                            shard_config,
-                        });
-                    }
+            .as_ref()
+            .ok_or_else(|| anyhow!("No indexer client and no static nodes configured"))?;
+
+        let locations = indexer.get_file_locations(root).await?;
+        let mut locations =
+            locations.ok_or_else(|| anyhow!("File not found on indexer for root {:?}", root))?;
+
+        let (selected, covered) = select(&mut locations, 1, true);
+        if !covered {
+            bail!("File not found or shards incomplete for root {:?}", root);
+        }
+
+        let mut clients = Vec::new();
+        for node in selected {
+            match ZgsClient::new(&node.url).await {
+                Ok(client) => clients.push(client),
+                Err(e) => {
+                    warn!("Failed to create client for node {}: {:?}", node.url, e);
+                    continue;
                 }
-                _ => {}
             }
         }
-        Self::select_download_nodes(candidates, &root_hex)
+
+        if clients.is_empty() {
+            bail!("No reachable nodes found for root {:?}", root);
+        }
+
+        Ok(clients)
     }
 
-    fn build_clients(&self, urls: &[String]) -> Result<Vec<HttpClient>> {
-        urls.iter()
-            .map(|url| {
-                HttpClientBuilder::default()
-                    .request_timeout(Duration::from_secs(self.zgs_rpc_timeout))
-                    .build(url)
-                    .map_err(|e| anyhow!("failed to build zgs client {}: {:?}", url, e))
-            })
-            .collect()
-    }
-
-    fn spawn_download_task(
-        &self,
-        client_index: &mut usize,
-        tx: Arc<KVTransaction>,
-        start_index: usize,
-        end_index: usize,
-        sender: &UnboundedSender<Result<(), (usize, usize, bool)>>,
-        clients: Arc<Vec<HttpClient>>,
-    ) {
+    fn spawn_download_task(&self, params: DownloadTaskParams) {
         debug!(
-            "downloading start_index {:?}, end_index: {:?} from client index: {}",
-            start_index, end_index, client_index
+            "downloading segment {:?}, entries: [{:?}, {:?})",
+            params.segment_index, params.start_entry, params.end_entry
         );
 
-        self.task_executor.spawn(
-            download_with_proof(
-                clients.clone(),
-                *client_index,
-                tx,
-                start_index,
-                end_index,
-                self.store.clone(),
-                sender.clone(),
-            ),
-            "download segment",
-        );
-
-        // round robin client
-        *client_index = (*client_index + 1) % clients.len();
+        let store = self.store.clone();
+        self.task_executor
+            .spawn(download_with_proof(params, store), "download segment");
     }
 
     async fn sync_data(&self, tx: &KVTransaction) -> Result<()> {
         if self.store.read().await.check_tx_completed(tx.seq)? {
             return Ok(());
         }
-        let root_hex = format!("{:#x}", tx.data_merkle_root);
-        let urls = self.fetch_locations(root_hex).await?;
-        let clients = Arc::new(self.build_clients(&urls)?);
+
+        let clients = self.fetch_clients(tx.data_merkle_root).await?;
+        let file_info = kv_tx_to_file_info(tx);
+
+        // Build DownloadContext with optional encryption
+        let ctx = {
+            let base = DownloadContext::new(clients, 1, file_info, tx.data_merkle_root)?;
+            if let Some(key) = &self.config.encryption_key {
+                base.with_encryption(*key)
+            } else {
+                base
+            }
+        };
+        let ctx = Arc::new(ctx);
+
         let tx_size_in_entry = if tx.size % ENTRY_SIZE as u64 == 0 {
             tx.size / ENTRY_SIZE as u64
         } else {
             tx.size / ENTRY_SIZE as u64 + 1
         };
 
-        let mut pending_entries = VecDeque::new();
-        let mut task_counter = 0;
-        let mut client_index = 0;
-        let (sender, mut rx) = mpsc::unbounded_channel();
         let tx = Arc::new(tx.clone());
 
-        for i in (0..tx_size_in_entry).step_by(ENTRIES_PER_SEGMENT * MAX_DOWNLOAD_TASK) {
+        // If encrypted, download segment 0 first to parse the encryption header
+        let start_entry = if self.config.encryption_key.is_some() {
+            let first_seg_entries = cmp::min(ENTRIES_PER_SEGMENT as u64, tx_size_in_entry);
+            let data = ctx.download_segment_padded(0, true).await?;
+
+            if data.len() / ENTRY_SIZE != first_seg_entries as usize {
+                bail!(
+                    "Segment 0 data length mismatch: got {} entries, expected {}",
+                    data.len() / ENTRY_SIZE,
+                    first_seg_entries
+                );
+            }
+
+            self.store.write().await.put_chunks_with_tx_hash(
+                tx.seq,
+                tx.hash(),
+                ChunkArray {
+                    data,
+                    start_index: 0,
+                },
+                None,
+            )?;
+
+            first_seg_entries
+        } else {
+            0
+        };
+
+        let mut pending_entries = VecDeque::new();
+        let mut task_counter = 0;
+        let (sender, mut rx) = mpsc::unbounded_channel();
+
+        for i in (start_entry..tx_size_in_entry).step_by(ENTRIES_PER_SEGMENT * MAX_DOWNLOAD_TASK) {
             let tasks_end_index = cmp::min(
                 tx_size_in_entry,
                 i + (ENTRIES_PER_SEGMENT * MAX_DOWNLOAD_TASK) as u64,
@@ -354,14 +295,15 @@ impl StreamDataFetcher {
         // spawn download tasks
         while task_counter < MAX_DOWNLOAD_TASK && !pending_entries.is_empty() {
             let (start_index, end_index) = pending_entries.pop_front().unwrap();
-            self.spawn_download_task(
-                &mut client_index,
-                tx.clone(),
-                start_index,
-                end_index,
-                &sender,
-                clients.clone(),
-            );
+            let segment_index = start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+            self.spawn_download_task(DownloadTaskParams {
+                ctx: ctx.clone(),
+                tx: tx.clone(),
+                segment_index,
+                start_entry: start_index,
+                end_entry: end_index,
+                sender: sender.clone(),
+            });
             task_counter += 1;
         }
 
@@ -371,14 +313,15 @@ impl StreamDataFetcher {
                 match ret {
                     Ok(_) => {
                         if let Some((start_index, end_index)) = pending_entries.pop_front() {
-                            self.spawn_download_task(
-                                &mut client_index,
-                                tx.clone(),
-                                start_index,
-                                end_index,
-                                &sender,
-                                clients.clone(),
-                            );
+                            let segment_index = start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+                            self.spawn_download_task(DownloadTaskParams {
+                                ctx: ctx.clone(),
+                                tx: tx.clone(),
+                                segment_index,
+                                start_entry: start_index,
+                                end_entry: end_index,
+                                sender: sender.clone(),
+                            });
                         } else {
                             task_counter -= 1;
                         }
@@ -392,7 +335,7 @@ impl StreamDataFetcher {
                                     *c += 1;
                                 }
 
-                                if *c == clients.len() * MAX_RETRY {
+                                if *c == MAX_RETRY {
                                     bail!(anyhow!(format!("Download segment failed, start_index {:?}, end_index: {:?}", start_index, end_index)));
                                 }
                             }
@@ -401,14 +344,15 @@ impl StreamDataFetcher {
                             }
                         }
 
-                        self.spawn_download_task(
-                            &mut client_index,
-                            tx.clone(),
-                            start_index,
-                            end_index,
-                            &sender,
-                            clients.clone(),
-                        );
+                        let segment_index = start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+                        self.spawn_download_task(DownloadTaskParams {
+                            ctx: ctx.clone(),
+                            tx: tx.clone(),
+                            segment_index,
+                            start_entry: start_index,
+                            end_entry: end_index,
+                            sender: sender.clone(),
+                        });
                     }
                 }
             }
@@ -494,13 +438,11 @@ impl StreamDataFetcher {
                             }
                         }
                     } else if stream_matched {
-                        // stream not matched, go to next tx
                         info!(
                             "sender of tx {:?} has no write permission, skipped.",
                             tx.seq
                         );
                     } else {
-                        // stream not matched, go to next tx
                         info!("tx {:?} is not in stream, skipped.", tx.seq);
                     }
                     // update progress, get next tx_seq to sync
