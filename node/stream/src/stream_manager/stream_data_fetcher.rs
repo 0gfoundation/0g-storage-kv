@@ -9,10 +9,10 @@ use std::{
     time::Duration,
 };
 use zg_storage_client::common::shard::select;
-use zg_storage_client::core::dataflow::padded_segment_root;
 use zg_storage_client::indexer::client::IndexerClient;
 use zg_storage_client::node::client_zgs::ZgsClient;
-use zg_storage_client::transfer::encryption::{crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE};
+use zg_storage_client::node::types::{FileInfo, Transaction as SdkTransaction};
+use zg_storage_client::transfer::downloader::DownloadContext;
 
 use storage_with_stream::{log_store::log_manager::ENTRY_SIZE, Store};
 use task_executor::TaskExecutor;
@@ -27,12 +27,12 @@ const MAX_DOWNLOAD_TASK: usize = 5;
 const MAX_RETRY: usize = 5;
 
 struct DownloadTaskParams {
+    ctx: Arc<DownloadContext>,
     tx: Arc<KVTransaction>,
-    start_index: usize,
-    end_index: usize,
+    segment_index: u64,
+    start_entry: usize,
+    end_entry: usize,
     sender: UnboundedSender<Result<(), (usize, usize, bool)>>,
-    clients: Arc<Vec<ZgsClient>>,
-    encryption: Option<([u8; 32], EncryptionHeader)>,
 }
 
 pub struct StreamDataFetcher {
@@ -43,123 +43,94 @@ pub struct StreamDataFetcher {
     task_executor: TaskExecutor,
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn download_with_proof(
-    clients: Arc<Vec<ZgsClient>>,
-    client_index: usize,
-    tx: Arc<KVTransaction>,
-    start_index: usize,
-    end_index: usize,
+    params: DownloadTaskParams,
     store: Arc<RwLock<dyn Store>>,
-    sender: UnboundedSender<Result<(), (usize, usize, bool)>>,
-    encryption: Option<([u8; 32], EncryptionHeader)>,
 ) {
+    let DownloadTaskParams {
+        ctx,
+        tx,
+        segment_index,
+        start_entry,
+        end_entry,
+        sender,
+    } = params;
+
     let mut fail_cnt = 0;
-    let mut index = client_index;
-    while fail_cnt < clients.len() {
-        let seg_index = start_index / ENTRIES_PER_SEGMENT;
+    while fail_cnt < MAX_RETRY {
         debug!(
-            "download_with_proof for tx_seq: {}, start_index: {}, end_index {} from client #{}",
-            tx.seq, start_index, end_index, index
+            "download_with_proof for tx_seq: {}, segment: {}, entries: [{}, {}) attempt {}",
+            tx.seq, segment_index, start_entry, end_entry, fail_cnt
         );
-        match clients[index]
-            .download_segment_with_proof_by_tx_seq(tx.seq, seg_index as u64)
-            .await
-        {
-            Ok(Some(segment)) => {
-                if segment.data.len() % ENTRY_SIZE != 0
-                    || segment.data.len() / ENTRY_SIZE != end_index - start_index
+
+        match ctx.download_segment_padded(segment_index, true).await {
+            Ok(data) => {
+                if data.len() % ENTRY_SIZE != 0
+                    || data.len() / ENTRY_SIZE != end_entry - start_entry
                 {
-                    debug!("invalid data length");
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
+                    debug!(
+                        "invalid data length: got {} entries, expected {}",
+                        data.len() / ENTRY_SIZE,
+                        end_entry - start_entry
+                    );
+                    if let Err(e) = sender.send(Err((start_entry, end_entry, true))) {
                         error!("send error: {:?}", e);
                     }
                     return;
                 }
-
-                if segment.root != tx.data_merkle_root {
-                    debug!("invalid file root");
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
-                        error!("send error: {:?}", e);
-                    }
-                    return;
-                }
-
-                let (seg_root, num_segs) = padded_segment_root(
-                    segment.index as u64,
-                    &segment.data,
-                    segment.file_size as u64,
-                );
-                if let Err(e) = segment.proof.validate_hash(
-                    segment.root,
-                    seg_root,
-                    segment.index as u64,
-                    num_segs,
-                ) {
-                    debug!("validate segment with error: {:?}", e);
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
-                        error!("send error: {:?}", e);
-                    }
-                    return;
-                }
-
-                // Decrypt segment data before storing if encryption is configured
-                let data = if let Some((key, header)) = &encryption {
-                    let segment_size_bytes = ENTRIES_PER_SEGMENT * ENTRY_SIZE;
-                    let data_offset = (seg_index * segment_size_bytes) as u64
-                        - ENCRYPTION_HEADER_SIZE as u64;
-                    let mut data = segment.data;
-                    crypt_at(key, &header.nonce, data_offset, &mut data);
-                    data
-                } else {
-                    segment.data
-                };
 
                 if let Err(e) = store.write().await.put_chunks_with_tx_hash(
                     tx.seq,
                     tx.hash(),
                     ChunkArray {
                         data,
-                        start_index: (segment.index * ENTRIES_PER_SEGMENT) as u64,
+                        start_index: segment_index * ENTRIES_PER_SEGMENT as u64,
                     },
                     None,
                 ) {
                     debug!("put segment with error: {:?}", e);
-                    if let Err(e) = sender.send(Err((start_index, end_index, true))) {
+                    if let Err(e) = sender.send(Err((start_entry, end_entry, true))) {
                         error!("send error: {:?}", e);
                     }
                     return;
                 }
 
-                debug!("download start_index {:?} successful", start_index);
+                debug!("download segment {} successful", segment_index);
                 if let Err(e) = sender.send(Ok(())) {
                     error!("send error: {:?}", e);
                 }
                 return;
             }
-            Ok(None) => {
-                debug!(
-                    "tx_seq {}, start_index {}, end_index {}, client #{} response is none",
-                    tx.seq, start_index, end_index, index
-                );
-                fail_cnt += 1;
-                index = (index + 1) % clients.len();
-                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
-            }
             Err(e) => {
                 warn!(
-                    "tx_seq {}, start_index {}, end_index {}, client #{} response error: {:?}",
-                    tx.seq, start_index, end_index, index, e
+                    "tx_seq {}, segment {}, download error: {:?}",
+                    tx.seq, segment_index, e
                 );
                 fail_cnt += 1;
-                index = (index + 1) % clients.len();
                 tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
             }
         }
     }
 
-    if let Err(e) = sender.send(Err((start_index, end_index, false))) {
+    if let Err(e) = sender.send(Err((start_entry, end_entry, false))) {
         error!("send error: {:?}", e);
+    }
+}
+
+/// Convert a KVTransaction to an SDK FileInfo for use with DownloadContext.
+fn kv_tx_to_file_info(tx: &KVTransaction) -> FileInfo {
+    FileInfo {
+        tx: SdkTransaction {
+            stream_ids: vec![],
+            data: vec![],
+            data_merkle_root: tx.data_merkle_root,
+            start_entry_index: tx.start_entry_index,
+            size: tx.size,
+            seq: tx.seq,
+        },
+        finalized: true,
+        is_cached: false,
+        uploaded_seg_num: 0,
     }
 }
 
@@ -239,105 +210,38 @@ impl StreamDataFetcher {
         Ok(clients)
     }
 
-    fn spawn_download_task(&self, client_index: &mut usize, params: DownloadTaskParams) {
+    fn spawn_download_task(&self, params: DownloadTaskParams) {
         debug!(
-            "downloading start_index {:?}, end_index: {:?} from client index: {}",
-            params.start_index, params.end_index, client_index
+            "downloading segment {:?}, entries: [{:?}, {:?})",
+            params.segment_index, params.start_entry, params.end_entry
         );
 
+        let store = self.store.clone();
         self.task_executor.spawn(
-            download_with_proof(
-                params.clients.clone(),
-                *client_index,
-                params.tx,
-                params.start_index,
-                params.end_index,
-                self.store.clone(),
-                params.sender,
-                params.encryption,
-            ),
+            download_with_proof(params, store),
             "download segment",
         );
-
-        // round robin client
-        *client_index = (*client_index + 1) % params.clients.len();
-    }
-
-    /// Download segment 0 first to extract the encryption header, decrypt it, and store it.
-    /// Returns the parsed EncryptionHeader for use by subsequent segment downloads.
-    async fn download_first_segment_encrypted(
-        &self,
-        clients: &Arc<Vec<ZgsClient>>,
-        tx: &Arc<KVTransaction>,
-        key: &[u8; 32],
-        end_index: usize,
-    ) -> Result<EncryptionHeader> {
-        for attempt in 0..clients.len() * MAX_RETRY {
-            let client_idx = attempt % clients.len();
-            match clients[client_idx]
-                .download_segment_with_proof_by_tx_seq(tx.seq, 0)
-                .await
-            {
-                Ok(Some(segment)) => {
-                    if segment.data.len() % ENTRY_SIZE != 0
-                        || segment.data.len() / ENTRY_SIZE != end_index
-                    {
-                        warn!("Invalid data length for segment 0");
-                        continue;
-                    }
-                    if segment.root != tx.data_merkle_root {
-                        warn!("Invalid file root for segment 0");
-                        continue;
-                    }
-                    let (seg_root, num_segs) =
-                        padded_segment_root(0, &segment.data, segment.file_size as u64);
-                    if let Err(e) =
-                        segment
-                            .proof
-                            .validate_hash(segment.root, seg_root, 0, num_segs)
-                    {
-                        warn!("Proof validation failed for segment 0: {:?}", e);
-                        continue;
-                    }
-
-                    if segment.data.len() < ENCRYPTION_HEADER_SIZE {
-                        bail!("Segment 0 too short for encryption header");
-                    }
-                    let header = EncryptionHeader::parse(&segment.data)?;
-
-                    // Decrypt: skip header bytes, decrypt the rest at data offset 0
-                    let mut data = segment.data;
-                    crypt_at(key, &header.nonce, 0, &mut data[ENCRYPTION_HEADER_SIZE..]);
-
-                    self.store.write().await.put_chunks_with_tx_hash(
-                        tx.seq,
-                        tx.hash(),
-                        ChunkArray {
-                            data,
-                            start_index: 0,
-                        },
-                        None,
-                    )?;
-
-                    return Ok(header);
-                }
-                Ok(None) => {
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
-                }
-                Err(e) => {
-                    warn!("Error downloading segment 0: {:?}", e);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
-                }
-            }
-        }
-        bail!("Failed to download segment 0 for encryption header after all retries");
     }
 
     async fn sync_data(&self, tx: &KVTransaction) -> Result<()> {
         if self.store.read().await.check_tx_completed(tx.seq)? {
             return Ok(());
         }
-        let clients = Arc::new(self.fetch_clients(tx.data_merkle_root).await?);
+
+        let clients = self.fetch_clients(tx.data_merkle_root).await?;
+        let file_info = kv_tx_to_file_info(tx);
+
+        // Build DownloadContext with optional encryption
+        let ctx = {
+            let base = DownloadContext::new(clients, 1, file_info, tx.data_merkle_root)?;
+            if let Some(key) = &self.config.encryption_key {
+                base.with_encryption(*key)
+            } else {
+                base
+            }
+        };
+        let ctx = Arc::new(ctx);
+
         let tx_size_in_entry = if tx.size % ENTRY_SIZE as u64 == 0 {
             tx.size / ENTRY_SIZE as u64
         } else {
@@ -346,25 +250,36 @@ impl StreamDataFetcher {
 
         let tx = Arc::new(tx.clone());
 
-        // If encrypted, download segment 0 first to get the encryption header
-        let (encryption, start_entry) = if let Some(key) = &self.config.encryption_key {
+        // If encrypted, download segment 0 first to parse the encryption header
+        let start_entry = if self.config.encryption_key.is_some() {
             let first_seg_entries = cmp::min(ENTRIES_PER_SEGMENT as u64, tx_size_in_entry);
-            let header = self
-                .download_first_segment_encrypted(
-                    &clients,
-                    &tx,
-                    key,
-                    first_seg_entries as usize,
-                )
-                .await?;
-            (Some((*key, header)), first_seg_entries)
+            let data = ctx.download_segment_padded(0, true).await?;
+
+            if data.len() / ENTRY_SIZE != first_seg_entries as usize {
+                bail!(
+                    "Segment 0 data length mismatch: got {} entries, expected {}",
+                    data.len() / ENTRY_SIZE,
+                    first_seg_entries
+                );
+            }
+
+            self.store.write().await.put_chunks_with_tx_hash(
+                tx.seq,
+                tx.hash(),
+                ChunkArray {
+                    data,
+                    start_index: 0,
+                },
+                None,
+            )?;
+
+            first_seg_entries
         } else {
-            (None, 0)
+            0
         };
 
         let mut pending_entries = VecDeque::new();
         let mut task_counter = 0;
-        let mut client_index = 0;
         let (sender, mut rx) = mpsc::unbounded_channel();
 
         for i in
@@ -387,17 +302,15 @@ impl StreamDataFetcher {
         // spawn download tasks
         while task_counter < MAX_DOWNLOAD_TASK && !pending_entries.is_empty() {
             let (start_index, end_index) = pending_entries.pop_front().unwrap();
-            self.spawn_download_task(
-                &mut client_index,
-                DownloadTaskParams {
-                    tx: tx.clone(),
-                    start_index,
-                    end_index,
-                    sender: sender.clone(),
-                    clients: clients.clone(),
-                    encryption: encryption.clone(),
-                },
-            );
+            let segment_index = start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+            self.spawn_download_task(DownloadTaskParams {
+                ctx: ctx.clone(),
+                tx: tx.clone(),
+                segment_index,
+                start_entry: start_index,
+                end_entry: end_index,
+                sender: sender.clone(),
+            });
             task_counter += 1;
         }
 
@@ -407,17 +320,16 @@ impl StreamDataFetcher {
                 match ret {
                     Ok(_) => {
                         if let Some((start_index, end_index)) = pending_entries.pop_front() {
-                            self.spawn_download_task(
-                                &mut client_index,
-                                DownloadTaskParams {
-                                    tx: tx.clone(),
-                                    start_index,
-                                    end_index,
-                                    sender: sender.clone(),
-                                    clients: clients.clone(),
-                                    encryption: encryption.clone(),
-                                },
-                            );
+                            let segment_index =
+                                start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+                            self.spawn_download_task(DownloadTaskParams {
+                                ctx: ctx.clone(),
+                                tx: tx.clone(),
+                                segment_index,
+                                start_entry: start_index,
+                                end_entry: end_index,
+                                sender: sender.clone(),
+                            });
                         } else {
                             task_counter -= 1;
                         }
@@ -431,7 +343,7 @@ impl StreamDataFetcher {
                                     *c += 1;
                                 }
 
-                                if *c == clients.len() * MAX_RETRY {
+                                if *c == MAX_RETRY {
                                     bail!(anyhow!(format!("Download segment failed, start_index {:?}, end_index: {:?}", start_index, end_index)));
                                 }
                             }
@@ -440,17 +352,16 @@ impl StreamDataFetcher {
                             }
                         }
 
-                        self.spawn_download_task(
-                            &mut client_index,
-                            DownloadTaskParams {
-                                tx: tx.clone(),
-                                start_index,
-                                end_index,
-                                sender: sender.clone(),
-                                clients: clients.clone(),
-                                encryption: encryption.clone(),
-                            },
-                        );
+                        let segment_index =
+                            start_index as u64 / ENTRIES_PER_SEGMENT as u64;
+                        self.spawn_download_task(DownloadTaskParams {
+                            ctx: ctx.clone(),
+                            tx: tx.clone(),
+                            segment_index,
+                            start_entry: start_index,
+                            end_entry: end_index,
+                            sender: sender.clone(),
+                        });
                     }
                 }
             }
@@ -536,13 +447,11 @@ impl StreamDataFetcher {
                             }
                         }
                     } else if stream_matched {
-                        // stream not matched, go to next tx
                         info!(
                             "sender of tx {:?} has no write permission, skipped.",
                             tx.seq
                         );
                     } else {
-                        // stream not matched, go to next tx
                         info!("tx {:?} is not in stream, skipped.", tx.seq);
                     }
                     // update progress, get next tx_seq to sync
