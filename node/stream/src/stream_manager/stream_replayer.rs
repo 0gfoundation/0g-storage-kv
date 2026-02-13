@@ -1009,6 +1009,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_replay_encrypted_cross_entry_boundary() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        // 200-byte value: total stored = header(17) + kv_overhead(68) + 200 = 285 bytes → 2 entries
+        let value = vec![0xAB; 200];
+        let kv_data = build_kv_data(stream_id, key, &value);
+
+        let header = EncryptionHeader::new();
+        let mut stored_data = header.to_bytes().to_vec();
+        stored_data.extend_from_slice(&kv_data);
+        assert!(stored_data.len() > ENTRY_SIZE && stored_data.len() <= 2 * ENTRY_SIZE);
+
+        let (store, tx) = setup_store_with_data(&stored_data, stream_id).await;
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: Some([0x42u8; 32]),
+        };
+
+        let replayer = StreamReplayer::new(config, store).await.unwrap();
+        let result = replayer.replay(&tx).await.unwrap();
+
+        match result {
+            ReplayResult::Commit(seq, write_set, _acl) => {
+                assert_eq!(seq, 0);
+                assert_eq!(write_set.stream_writes.len(), 1);
+                let sw = &write_set.stream_writes[0];
+                assert_eq!(sw.stream_id, stream_id);
+                assert_eq!(*sw.key, key.to_vec());
+                assert_eq!(sw.end_index - sw.start_index, value.len() as u64);
+            }
+            other => panic!("expected Commit, got {}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replay_encrypted_at_segment_boundary() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        // One segment = 1024 entries × 256 bytes = 262144 bytes
+        // Overhead = header(17) + kv_overhead(68) = 85 bytes
+        // Value sized so total = exactly one segment
+        let value = vec![0xCD; 262144 - 85];
+        let kv_data = build_kv_data(stream_id, key, &value);
+
+        let header = EncryptionHeader::new();
+        let mut stored_data = header.to_bytes().to_vec();
+        stored_data.extend_from_slice(&kv_data);
+        assert_eq!(stored_data.len(), 1024 * ENTRY_SIZE);
+
+        let (store, tx) = setup_store_with_data(&stored_data, stream_id).await;
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: Some([0x42u8; 32]),
+        };
+
+        let replayer = StreamReplayer::new(config, store).await.unwrap();
+        let result = replayer.replay(&tx).await.unwrap();
+
+        match result {
+            ReplayResult::Commit(seq, write_set, _acl) => {
+                assert_eq!(seq, 0);
+                assert_eq!(write_set.stream_writes.len(), 1);
+                let sw = &write_set.stream_writes[0];
+                assert_eq!(sw.stream_id, stream_id);
+                assert_eq!(*sw.key, key.to_vec());
+                assert_eq!(sw.end_index - sw.start_index, value.len() as u64);
+            }
+            other => panic!("expected Commit, got {}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replay_encrypted_over_segment() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        // 1.5 segments = 393216 bytes total, value = 393216 - 85 overhead
+        let value = vec![0xEF; 393216 - 85];
+        let kv_data = build_kv_data(stream_id, key, &value);
+
+        let header = EncryptionHeader::new();
+        let mut stored_data = header.to_bytes().to_vec();
+        stored_data.extend_from_slice(&kv_data);
+        assert!(stored_data.len() > 1024 * ENTRY_SIZE);
+
+        let (store, tx) = setup_store_with_data(&stored_data, stream_id).await;
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: Some([0x42u8; 32]),
+        };
+
+        let replayer = StreamReplayer::new(config, store).await.unwrap();
+        let result = replayer.replay(&tx).await.unwrap();
+
+        match result {
+            ReplayResult::Commit(seq, write_set, _acl) => {
+                assert_eq!(seq, 0);
+                assert_eq!(write_set.stream_writes.len(), 1);
+                let sw = &write_set.stream_writes[0];
+                assert_eq!(sw.stream_id, stream_id);
+                assert_eq!(*sw.key, key.to_vec());
+                assert_eq!(sw.end_index - sw.start_index, value.len() as u64);
+            }
+            other => panic!("expected Commit, got {}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_encrypt_decrypt_store_roundtrip() {
         let stream_id = H256::from_low_u64_be(1);
         let key = b"mykey";
