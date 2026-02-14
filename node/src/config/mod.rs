@@ -43,6 +43,11 @@ build_config! {
     // encryption
     (encryption_key, (String), "".to_string())
 
+    // stream data sync
+    (max_download_retries, (usize), 0)
+    (download_timeout_ms, (u64), 300000) // 5 minutes
+    (download_retry_interval_ms, (u64), 5000) // 5 seconds
+
     // db
     (db_dir, (String), "db".to_string())
     (merkle_node_cache_capacity, (usize), 32 * 1024 * 1024)

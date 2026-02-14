@@ -4,8 +4,8 @@ use kv_types::KVTransaction;
 use shared_types::ChunkArray;
 use std::{
     cmp,
-    collections::{HashMap, VecDeque},
-    sync::Arc,
+    collections::{HashSet, VecDeque},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use zg_storage_client::common::shard::select;
@@ -24,7 +24,8 @@ use tokio::sync::{
 const RETRY_WAIT_MS: u64 = 1000;
 const ENTRIES_PER_SEGMENT: usize = 1024;
 const MAX_DOWNLOAD_TASK: usize = 5;
-const MAX_RETRY: usize = 5;
+const SEGMENT_DOWNLOAD_RETRIES: usize = 5;
+const HEALTH_CHECK_TIMEOUT_SECS: u64 = 2;
 
 struct DownloadTaskParams {
     ctx: Arc<DownloadContext>,
@@ -32,14 +33,15 @@ struct DownloadTaskParams {
     segment_index: u64,
     start_entry: usize,
     end_entry: usize,
-    sender: UnboundedSender<Result<(), (usize, usize, bool)>>,
+    sender: UnboundedSender<Result<()>>,
 }
 
 pub struct StreamDataFetcher {
     config: StreamConfig,
     store: Arc<RwLock<dyn Store>>,
     indexer_client: Option<IndexerClient>,
-    static_clients: Vec<ZgsClient>,
+    static_clients: Vec<(String, ZgsClient)>,
+    dead_urls: Mutex<HashSet<String>>,
     task_executor: TaskExecutor,
 }
 
@@ -53,11 +55,11 @@ async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn S
         sender,
     } = params;
 
-    let mut fail_cnt = 0;
-    while fail_cnt < MAX_RETRY {
+    let mut last_err = None;
+    for attempt in 0..SEGMENT_DOWNLOAD_RETRIES {
         debug!(
             "download_with_proof for tx_seq: {}, segment: {}, entries: [{}, {}) attempt {}",
-            tx.seq, segment_index, start_entry, end_entry, fail_cnt
+            tx.seq, segment_index, start_entry, end_entry, attempt
         );
 
         match ctx.download_segment_padded(segment_index, true).await {
@@ -65,51 +67,48 @@ async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn S
                 if data.len() % ENTRY_SIZE != 0
                     || data.len() / ENTRY_SIZE != end_entry - start_entry
                 {
-                    debug!(
+                    last_err = Some(anyhow!(
                         "invalid data length: got {} entries, expected {}",
                         data.len() / ENTRY_SIZE,
                         end_entry - start_entry
-                    );
-                    if let Err(e) = sender.send(Err((start_entry, end_entry, true))) {
-                        error!("send error: {:?}", e);
+                    ));
+                } else {
+                    match store.write().await.put_chunks_with_tx_hash(
+                        tx.seq,
+                        tx.hash(),
+                        ChunkArray {
+                            data,
+                            start_index: segment_index * ENTRIES_PER_SEGMENT as u64,
+                        },
+                        None,
+                    ) {
+                        Ok(_) => {
+                            debug!("download segment {} successful", segment_index);
+                            if let Err(e) = sender.send(Ok(())) {
+                                error!("send error: {:?}", e);
+                            }
+                            return;
+                        }
+                        Err(e) => {
+                            last_err = Some(anyhow!(e));
+                        }
                     }
-                    return;
                 }
-
-                if let Err(e) = store.write().await.put_chunks_with_tx_hash(
-                    tx.seq,
-                    tx.hash(),
-                    ChunkArray {
-                        data,
-                        start_index: segment_index * ENTRIES_PER_SEGMENT as u64,
-                    },
-                    None,
-                ) {
-                    debug!("put segment with error: {:?}", e);
-                    if let Err(e) = sender.send(Err((start_entry, end_entry, true))) {
-                        error!("send error: {:?}", e);
-                    }
-                    return;
-                }
-
-                debug!("download segment {} successful", segment_index);
-                if let Err(e) = sender.send(Ok(())) {
-                    error!("send error: {:?}", e);
-                }
-                return;
             }
             Err(e) => {
-                warn!(
+                last_err = Some(anyhow!(
                     "tx_seq {}, segment {}, download error: {:?}",
-                    tx.seq, segment_index, e
-                );
-                fail_cnt += 1;
-                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tx.seq,
+                    segment_index,
+                    e
+                ));
             }
         }
+
+        tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
     }
 
-    if let Err(e) = sender.send(Err((start_entry, end_entry, false))) {
+    if let Err(e) = sender.send(Err(last_err.unwrap_or_else(|| anyhow!("download failed")))) {
         error!("send error: {:?}", e);
     }
 }
@@ -158,7 +157,8 @@ impl StreamDataFetcher {
 
         let mut static_clients = Vec::new();
         for url in &zgs_nodes {
-            static_clients.push(ZgsClient::new(url).await?);
+            let client = ZgsClient::new(url).await?;
+            static_clients.push((url.clone(), client));
         }
 
         Ok(Self {
@@ -166,45 +166,109 @@ impl StreamDataFetcher {
             store,
             indexer_client,
             static_clients,
+            dead_urls: Mutex::new(HashSet::new()),
             task_executor,
         })
     }
 
-    async fn fetch_clients(&self, root: ethers::types::H256) -> Result<Vec<ZgsClient>> {
-        if !self.static_clients.is_empty() {
-            return Ok(self.static_clients.clone());
-        }
-
-        let indexer = self
-            .indexer_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("No indexer client and no static nodes configured"))?;
-
-        let locations = indexer.get_file_locations(root).await?;
-        let mut locations =
-            locations.ok_or_else(|| anyhow!("File not found on indexer for root {:?}", root))?;
-
-        let (selected, covered) = select(&mut locations, 1, true);
-        if !covered {
-            bail!("File not found or shards incomplete for root {:?}", root);
-        }
-
-        let mut clients = Vec::new();
-        for node in selected {
-            match ZgsClient::new(&node.url).await {
-                Ok(client) => clients.push(client),
-                Err(e) => {
-                    warn!("Failed to create client for node {}: {:?}", node.url, e);
-                    continue;
+    /// Health-check static clients and mark unreachable ones as dead.
+    async fn update_dead_nodes(&self) {
+        let timeout = Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS);
+        for (url, client) in &self.static_clients {
+            match tokio::time::timeout(timeout, client.get_status()).await {
+                Ok(Ok(_)) => {
+                    self.dead_urls.lock().unwrap().remove(url);
+                }
+                _ => {
+                    warn!("Node {} is unreachable, marking as dead", url);
+                    self.dead_urls.lock().unwrap().insert(url.clone());
                 }
             }
         }
+    }
 
-        if clients.is_empty() {
-            bail!("No reachable nodes found for root {:?}", root);
+    /// Fetch alive storage clients, retrying until at least one is available.
+    /// For indexer mode: re-queries indexer and filters dead nodes before shard
+    /// selection so the algorithm picks a valid replication from alive nodes.
+    async fn fetch_clients(&self, root: ethers::types::H256) -> Vec<ZgsClient> {
+        loop {
+            if !self.static_clients.is_empty() {
+                let dead = self.dead_urls.lock().unwrap().clone();
+                let alive: Vec<ZgsClient> = self
+                    .static_clients
+                    .iter()
+                    .filter(|(url, _)| !dead.contains(url))
+                    .map(|(_, client)| client.clone())
+                    .collect();
+                if !alive.is_empty() {
+                    return alive;
+                }
+                // All static nodes marked dead — clear and return all to retry
+                warn!("All static nodes marked as dead, clearing dead set and retrying");
+                self.dead_urls.lock().unwrap().clear();
+                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                continue;
+            }
+
+            let indexer = match self.indexer_client.as_ref() {
+                Some(c) => c,
+                None => {
+                    error!("No indexer client and no static nodes configured");
+                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    continue;
+                }
+            };
+
+            let mut locations = match indexer.get_file_locations(root).await {
+                Ok(Some(locs)) if !locs.is_empty() => locs,
+                Ok(_) => {
+                    info!("File not found on indexer for root {:?}, retrying", root);
+                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Indexer query failed: {:?}, retrying", e);
+                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    continue;
+                }
+            };
+
+            // Filter out dead nodes before shard selection
+            {
+                let dead = self.dead_urls.lock().unwrap();
+                locations.retain(|node| !dead.contains(&node.url));
+            }
+
+            let (selected, covered) = select(&mut locations, 1, true);
+            if !covered {
+                warn!(
+                    "Shards not fully covered after filtering dead nodes for root {:?}, \
+                     clearing dead set and retrying",
+                    root
+                );
+                self.dead_urls.lock().unwrap().clear();
+                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                continue;
+            }
+
+            let mut clients = Vec::new();
+            for node in &selected {
+                match ZgsClient::new(&node.url).await {
+                    Ok(client) => clients.push(client),
+                    Err(e) => {
+                        warn!("Failed to create client for node {}: {:?}", node.url, e);
+                        self.dead_urls.lock().unwrap().insert(node.url.clone());
+                    }
+                }
+            }
+
+            if !clients.is_empty() {
+                return clients;
+            }
+
+            warn!("No reachable nodes after selection, retrying");
+            tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
         }
-
-        Ok(clients)
     }
 
     fn spawn_download_task(&self, params: DownloadTaskParams) {
@@ -223,7 +287,7 @@ impl StreamDataFetcher {
             return Ok(());
         }
 
-        let clients = self.fetch_clients(tx.data_merkle_root).await?;
+        let clients = self.fetch_clients(tx.data_merkle_root).await;
         let file_info = kv_tx_to_file_info(tx);
 
         // Build DownloadContext with optional encryption
@@ -307,7 +371,6 @@ impl StreamDataFetcher {
             task_counter += 1;
         }
 
-        let mut failed_tasks = HashMap::new();
         while task_counter > 0 {
             if let Some(ret) = rx.recv().await {
                 match ret {
@@ -326,33 +389,8 @@ impl StreamDataFetcher {
                             task_counter -= 1;
                         }
                     }
-                    Err((start_index, end_index, data_err)) => {
-                        warn!("Download data of tx_seq {:?}, start_index {:?}, end_index {:?}, failed",tx.seq, start_index, end_index);
-
-                        match failed_tasks.get_mut(&start_index) {
-                            Some(c) => {
-                                if data_err {
-                                    *c += 1;
-                                }
-
-                                if *c == MAX_RETRY {
-                                    bail!(anyhow!(format!("Download segment failed, start_index {:?}, end_index: {:?}", start_index, end_index)));
-                                }
-                            }
-                            _ => {
-                                failed_tasks.insert(start_index, 1);
-                            }
-                        }
-
-                        let segment_index = start_index as u64 / ENTRIES_PER_SEGMENT as u64;
-                        self.spawn_download_task(DownloadTaskParams {
-                            ctx: ctx.clone(),
-                            tx: tx.clone(),
-                            segment_index,
-                            start_entry: start_index,
-                            end_entry: end_index,
-                            sender: sender.clone(),
-                        });
+                    Err(e) => {
+                        bail!("Download failed for tx_seq {:?}: {:?}", tx.seq, e);
                     }
                 }
             }
@@ -384,6 +422,7 @@ impl StreamDataFetcher {
         }
 
         let mut check_sync_progress = false;
+        let mut consecutive_failures: usize = 0;
         loop {
             if check_sync_progress {
                 match self
@@ -397,6 +436,7 @@ impl StreamDataFetcher {
                         if tx_seq != progress {
                             debug!("reorg happened: tx_seq {}, progress {}", tx_seq, progress);
                             tx_seq = progress;
+                            consecutive_failures = 0;
                         }
                     }
                     Err(e) => {
@@ -425,14 +465,47 @@ impl StreamDataFetcher {
                         tx_seq, stream_matched, can_write
                     );
                     if stream_matched && can_write {
+                        // Health-check nodes before download to avoid slow
+                        // timeouts against unreachable nodes
+                        self.update_dead_nodes().await;
                         // sync data
                         info!("syncing data of tx with sequence number {:?}..", tx.seq);
-                        match self.sync_data(&tx).await {
-                            Ok(()) => {
+                        let sync_timeout = Duration::from_millis(self.config.download_timeout_ms);
+                        let sync_result =
+                            tokio::time::timeout(sync_timeout, self.sync_data(&tx)).await;
+                        let sync_err = match sync_result {
+                            Ok(Ok(())) => {
                                 info!("data of tx with sequence number {:?} synced.", tx.seq);
+                                // Clear dead nodes on success
+                                self.dead_urls.lock().unwrap().clear();
+                                None
                             }
-                            Err(e) => {
-                                error!("stream data sync error: e={:?}", e);
+                            Ok(Err(e)) => Some(e),
+                            Err(_) => Some(anyhow!("sync_data timed out for tx {:?}", tx_seq)),
+                        };
+                        if let Some(e) = sync_err {
+                            // Health-check nodes and mark dead ones
+                            self.update_dead_nodes().await;
+
+                            consecutive_failures += 1;
+                            if self.config.max_download_retries > 0
+                                && consecutive_failures >= self.config.max_download_retries
+                            {
+                                warn!(
+                                    "tx {:?} download failed after {} attempts, skipping: e={:?}",
+                                    tx_seq, consecutive_failures, e
+                                );
+                                consecutive_failures = 0;
+                                // fall through to advance progress
+                            } else {
+                                error!(
+                                    "stream data sync error (attempt {}/{}): e={:?}",
+                                    consecutive_failures, self.config.max_download_retries, e
+                                );
+                                tokio::time::sleep(Duration::from_millis(
+                                    self.config.download_retry_interval_ms,
+                                ))
+                                .await;
                                 check_sync_progress = true;
                                 continue;
                             }
@@ -455,6 +528,7 @@ impl StreamDataFetcher {
                     {
                         Ok(next_tx_seq) => {
                             tx_seq = next_tx_seq;
+                            consecutive_failures = 0;
                         }
                         Err(e) => {
                             error!("update stream data sync progress error: e={:?}", e);

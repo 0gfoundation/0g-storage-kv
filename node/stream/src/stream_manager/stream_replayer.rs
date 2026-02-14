@@ -659,12 +659,53 @@ impl StreamReplayer {
                                         }
                                     }
                                     ReplayResult::DataUnavailable => {
-                                        // data not available
-                                        info!("data of tx with sequence number {:?} is not available yet, wait..", tx.seq);
-                                        tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS))
+                                        // Check if data fetcher has moved past this tx (download skipped)
+                                        let data_progress = self
+                                            .store
+                                            .read()
+                                            .await
+                                            .get_stream_data_sync_progress()
                                             .await;
-                                        check_replay_progress = true;
-                                        continue;
+                                        match data_progress {
+                                            Ok(progress) if progress > tx_seq => {
+                                                // Data fetcher gave up on this tx
+                                                let reason = "DownloadFailed".to_string();
+                                                match self
+                                                    .store
+                                                    .write()
+                                                    .await
+                                                    .put_stream(
+                                                        tx.seq,
+                                                        tx.data_merkle_root,
+                                                        reason.clone(),
+                                                        None,
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(_) => {
+                                                        warn!(
+                                                            "tx with sequence number {:?} skipped due to download failure",
+                                                            tx.seq
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        error!("stream replay result finalization error: e={:?}", e);
+                                                        check_replay_progress = true;
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                // Data fetcher is still working on it, wait
+                                                info!("data of tx with sequence number {:?} is not available yet, wait..", tx.seq);
+                                                tokio::time::sleep(Duration::from_millis(
+                                                    RETRY_WAIT_MS,
+                                                ))
+                                                .await;
+                                                check_replay_progress = true;
+                                                continue;
+                                            }
+                                        }
                                     }
                                     _ => {
                                         match self
@@ -945,6 +986,9 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: None,
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -986,6 +1030,9 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1027,6 +1074,9 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1066,6 +1116,9 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1103,6 +1156,9 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1150,6 +1206,9 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some(encryption_key),
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store.clone()).await.unwrap();
