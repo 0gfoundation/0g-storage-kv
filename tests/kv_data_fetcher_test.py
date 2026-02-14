@@ -91,7 +91,7 @@ class DataFetcherTest(KVTestFramework):
         wait_until(
             lambda: self.kv_nodes[0].kv_get_trasanction_result(self.next_tx_seq)
             == "Commit",
-            timeout=120,
+            timeout=60,
         )
         first_version = self.next_tx_seq
         self.next_tx_seq += 1
@@ -116,7 +116,7 @@ class DataFetcherTest(KVTestFramework):
         wait_until(
             lambda: self.kv_nodes[0].kv_get_trasanction_result(self.next_tx_seq)
             == "Commit",
-            timeout=120,
+            timeout=60,
         )
         second_version = self.next_tx_seq
         self.next_tx_seq += 1
