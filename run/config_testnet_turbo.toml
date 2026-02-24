@@ -40,6 +40,19 @@ indexer_url = "https://indexer-storage-turbo-testnet.0g.ai"
 zgs_node_urls = ""
 
 #######################################################################
+###                  Stream Data Sync Options                       ###
+#######################################################################
+
+# Max retries before skipping a failed download. 0 means retry forever.
+# max_download_retries = 3
+# Timeout for a single download attempt in milliseconds.
+# download_timeout_ms = 10000
+# Interval between download retry attempts in milliseconds.
+# download_retry_interval_ms = 1000
+# Wait time between polling iterations in the data fetcher and replayer in milliseconds.
+# retry_wait_ms = 1000
+
+#######################################################################
 ###                     Misc Config Options                         ###
 #######################################################################
 

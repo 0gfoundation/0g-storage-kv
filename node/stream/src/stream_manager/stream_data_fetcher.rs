@@ -254,7 +254,7 @@ impl StreamDataFetcher {
 
             let mut clients = Vec::new();
             for node in &selected {
-                match ZgsClient::new(&node.url).await {
+                match ZgsClient::new_with_shard_config(&node.url, node.config.clone()).await {
                     Ok(client) => clients.push(client),
                     Err(e) => {
                         warn!("Failed to create client for node {}: {:?}", node.url, e);
