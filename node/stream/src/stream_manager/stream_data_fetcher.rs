@@ -21,7 +21,6 @@ use tokio::sync::{
     RwLock,
 };
 
-const RETRY_WAIT_MS: u64 = 1000;
 const ENTRIES_PER_SEGMENT: usize = 1024;
 const MAX_DOWNLOAD_TASK: usize = 5;
 const SEGMENT_DOWNLOAD_RETRIES: usize = 5;
@@ -34,6 +33,7 @@ struct DownloadTaskParams {
     start_entry: usize,
     end_entry: usize,
     sender: UnboundedSender<Result<()>>,
+    retry_wait_ms: u64,
 }
 
 pub struct StreamDataFetcher {
@@ -53,6 +53,7 @@ async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn S
         start_entry,
         end_entry,
         sender,
+        retry_wait_ms,
     } = params;
 
     let mut last_err = None;
@@ -105,7 +106,7 @@ async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn S
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+        tokio::time::sleep(Duration::from_millis(retry_wait_ms)).await;
     }
 
     if let Err(e) = sender.send(Err(last_err.unwrap_or_else(|| anyhow!("download failed")))) {
@@ -206,7 +207,7 @@ impl StreamDataFetcher {
                 // All static nodes marked dead — clear and return all to retry
                 warn!("All static nodes marked as dead, clearing dead set and retrying");
                 self.dead_urls.lock().unwrap().clear();
-                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                 continue;
             }
 
@@ -214,7 +215,7 @@ impl StreamDataFetcher {
                 Some(c) => c,
                 None => {
                     error!("No indexer client and no static nodes configured");
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     continue;
                 }
             };
@@ -223,12 +224,12 @@ impl StreamDataFetcher {
                 Ok(Some(locs)) if !locs.is_empty() => locs,
                 Ok(_) => {
                     info!("File not found on indexer for root {:?}, retrying", root);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     continue;
                 }
                 Err(e) => {
                     warn!("Indexer query failed: {:?}, retrying", e);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     continue;
                 }
             };
@@ -247,7 +248,7 @@ impl StreamDataFetcher {
                     root
                 );
                 self.dead_urls.lock().unwrap().clear();
-                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                 continue;
             }
 
@@ -267,7 +268,7 @@ impl StreamDataFetcher {
             }
 
             warn!("No reachable nodes after selection, retrying");
-            tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+            tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
         }
     }
 
@@ -367,6 +368,7 @@ impl StreamDataFetcher {
                 start_entry: start_index,
                 end_entry: end_index,
                 sender: sender.clone(),
+                retry_wait_ms: self.config.retry_wait_ms,
             });
             task_counter += 1;
         }
@@ -384,6 +386,7 @@ impl StreamDataFetcher {
                                 start_entry: start_index,
                                 end_entry: end_index,
                                 sender: sender.clone(),
+                                retry_wait_ms: self.config.retry_wait_ms,
                             });
                         } else {
                             task_counter -= 1;
@@ -536,12 +539,12 @@ impl StreamDataFetcher {
                     }
                 }
                 Ok(None) => {
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     check_sync_progress = true;
                 }
                 Err(e) => {
                     error!("stream data sync error: e={:?}", e);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     check_sync_progress = true;
                 }
             }

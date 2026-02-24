@@ -18,7 +18,7 @@ tokio = "1.19.2"
 ethers = { version = "^2", features = ["ws"] }
 storage_with_stream = { path = "../storage_with_stream" }
 rpc = {path = "../rpc"}
-zg-storage-client = { git = "https://github.com/0gfoundation/0g-storage-sdk-rust.git", rev = "6101dc7714c0cfc71c9e902e351068e189fa9e15" }
+zg-storage-client = { git = "https://github.com/0gfoundation/0g-storage-sdk-rust.git", branch = "main" }
 contract-interface = { workspace = true }
 rusqlite = { version = "0.28.0", features = ["bundled"] }
 tracing = "0.1.35"

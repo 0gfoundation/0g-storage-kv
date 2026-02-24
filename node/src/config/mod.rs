@@ -47,6 +47,7 @@ build_config! {
     (max_download_retries, (usize), 0)
     (download_timeout_ms, (u64), 300000) // 5 minutes
     (download_retry_interval_ms, (u64), 5000) // 5 seconds
+    (retry_wait_ms, (u64), 1000) // 1 second, wait between retries in data fetcher and replayer
 
     // db
     (db_dir, (String), "db".to_string())
