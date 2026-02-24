@@ -473,8 +473,7 @@ impl StreamDataFetcher {
                         info!("syncing data of tx with sequence number {:?}..", tx.seq);
 
                         // Step 1: Wait for file locations with timeout
-                        let fetch_timeout =
-                            Duration::from_millis(self.config.download_timeout_ms);
+                        let fetch_timeout = Duration::from_millis(self.config.download_timeout_ms);
                         let fetch_result = tokio::time::timeout(
                             fetch_timeout,
                             self.fetch_clients(tx.data_merkle_root),
