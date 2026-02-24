@@ -49,6 +49,7 @@ impl ZgsKVConfig {
             max_download_retries: self.max_download_retries,
             download_timeout_ms: self.download_timeout_ms,
             download_retry_interval_ms: self.download_retry_interval_ms,
+            retry_wait_ms: self.retry_wait_ms,
         })
     }
 

@@ -33,8 +33,8 @@ class KVDownloadSkipTest(KVTestFramework):
         stream_id = to_stream_id(0)
 
         # Setup KV node with small retry settings so the test finishes quickly.
-        # max_download_retries=2: skip after 2 consecutive sync_data failures/timeouts
-        # download_timeout_ms=30000: 30s timeout per sync_data attempt
+        # max_download_retries=2: skip after 2 consecutive sync_data failures
+        # download_timeout_ms=30000: 30s timeout for waiting for file locations
         # download_retry_interval_ms=1000: 1s sleep between retries
         self.setup_kv_node(0, [stream_id], updated_config={
             "zgs_node_urls": self.nodes[0].rpc_url,

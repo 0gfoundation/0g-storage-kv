@@ -21,8 +21,6 @@ use tokio::sync::RwLock;
 
 use zg_storage_client::transfer::encryption::ENCRYPTION_HEADER_SIZE;
 
-use super::RETRY_WAIT_MS;
-
 const MAX_LOAD_ENTRY_SIZE: u64 = 10;
 const STREAM_ID_SIZE: u64 = 32;
 const STREAM_KEY_LEN_SIZE: u64 = 3;
@@ -699,7 +697,7 @@ impl StreamReplayer {
                                                 // Data fetcher is still working on it, wait
                                                 info!("data of tx with sequence number {:?} is not available yet, wait..", tx.seq);
                                                 tokio::time::sleep(Duration::from_millis(
-                                                    RETRY_WAIT_MS,
+                                                    self.config.retry_wait_ms,
                                                 ))
                                                 .await;
                                                 check_replay_progress = true;
@@ -737,7 +735,10 @@ impl StreamReplayer {
                             }
                             Err(e) => {
                                 error!("replay stream data error: e={:?}", e);
-                                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                                tokio::time::sleep(Duration::from_millis(
+                                    self.config.retry_wait_ms,
+                                ))
+                                .await;
                                 check_replay_progress = true;
                                 continue;
                             }
@@ -788,12 +789,12 @@ impl StreamReplayer {
                     }
                 }
                 Ok(None) => {
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     check_replay_progress = true;
                 }
                 Err(e) => {
                     error!("stream replay error: e={:?}", e);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     check_replay_progress = true;
                 }
             }
@@ -989,6 +990,7 @@ mod tests {
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
+            retry_wait_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1033,6 +1035,7 @@ mod tests {
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
+            retry_wait_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1077,6 +1080,7 @@ mod tests {
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
+            retry_wait_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1119,6 +1123,7 @@ mod tests {
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
+            retry_wait_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1159,6 +1164,7 @@ mod tests {
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
+            retry_wait_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store).await.unwrap();
@@ -1209,6 +1215,7 @@ mod tests {
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
+            retry_wait_ms: 1000,
         };
 
         let replayer = StreamReplayer::new(config, store.clone()).await.unwrap();

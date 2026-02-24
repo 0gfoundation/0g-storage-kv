@@ -10,4 +10,5 @@ pub struct Config {
     pub max_download_retries: usize,
     pub download_timeout_ms: u64,
     pub download_retry_interval_ms: u64,
+    pub retry_wait_ms: u64,
 }

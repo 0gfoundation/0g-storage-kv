@@ -21,7 +21,6 @@ use tokio::sync::{
     RwLock,
 };
 
-const RETRY_WAIT_MS: u64 = 1000;
 const ENTRIES_PER_SEGMENT: usize = 1024;
 const MAX_DOWNLOAD_TASK: usize = 5;
 const SEGMENT_DOWNLOAD_RETRIES: usize = 5;
@@ -34,6 +33,7 @@ struct DownloadTaskParams {
     start_entry: usize,
     end_entry: usize,
     sender: UnboundedSender<Result<()>>,
+    retry_wait_ms: u64,
 }
 
 pub struct StreamDataFetcher {
@@ -53,6 +53,7 @@ async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn S
         start_entry,
         end_entry,
         sender,
+        retry_wait_ms,
     } = params;
 
     let mut last_err = None;
@@ -105,7 +106,7 @@ async fn download_with_proof(params: DownloadTaskParams, store: Arc<RwLock<dyn S
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+        tokio::time::sleep(Duration::from_millis(retry_wait_ms)).await;
     }
 
     if let Err(e) = sender.send(Err(last_err.unwrap_or_else(|| anyhow!("download failed")))) {
@@ -206,7 +207,7 @@ impl StreamDataFetcher {
                 // All static nodes marked dead — clear and return all to retry
                 warn!("All static nodes marked as dead, clearing dead set and retrying");
                 self.dead_urls.lock().unwrap().clear();
-                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                 continue;
             }
 
@@ -214,7 +215,7 @@ impl StreamDataFetcher {
                 Some(c) => c,
                 None => {
                     error!("No indexer client and no static nodes configured");
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     continue;
                 }
             };
@@ -223,12 +224,12 @@ impl StreamDataFetcher {
                 Ok(Some(locs)) if !locs.is_empty() => locs,
                 Ok(_) => {
                     info!("File not found on indexer for root {:?}, retrying", root);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     continue;
                 }
                 Err(e) => {
                     warn!("Indexer query failed: {:?}, retrying", e);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     continue;
                 }
             };
@@ -247,13 +248,13 @@ impl StreamDataFetcher {
                     root
                 );
                 self.dead_urls.lock().unwrap().clear();
-                tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                 continue;
             }
 
             let mut clients = Vec::new();
             for node in &selected {
-                match ZgsClient::new(&node.url).await {
+                match ZgsClient::new_with_shard_config(&node.url, node.config.clone()).await {
                     Ok(client) => clients.push(client),
                     Err(e) => {
                         warn!("Failed to create client for node {}: {:?}", node.url, e);
@@ -267,7 +268,7 @@ impl StreamDataFetcher {
             }
 
             warn!("No reachable nodes after selection, retrying");
-            tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+            tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
         }
     }
 
@@ -282,12 +283,11 @@ impl StreamDataFetcher {
             .spawn(download_with_proof(params, store), "download segment");
     }
 
-    async fn sync_data(&self, tx: &KVTransaction) -> Result<()> {
+    async fn sync_data(&self, tx: &KVTransaction, clients: Vec<ZgsClient>) -> Result<()> {
         if self.store.read().await.check_tx_completed(tx.seq)? {
             return Ok(());
         }
 
-        let clients = self.fetch_clients(tx.data_merkle_root).await;
         let file_info = kv_tx_to_file_info(tx);
 
         // Build DownloadContext with optional encryption
@@ -367,6 +367,7 @@ impl StreamDataFetcher {
                 start_entry: start_index,
                 end_entry: end_index,
                 sender: sender.clone(),
+                retry_wait_ms: self.config.retry_wait_ms,
             });
             task_counter += 1;
         }
@@ -384,6 +385,7 @@ impl StreamDataFetcher {
                                 start_entry: start_index,
                                 end_entry: end_index,
                                 sender: sender.clone(),
+                                retry_wait_ms: self.config.retry_wait_ms,
                             });
                         } else {
                             task_counter -= 1;
@@ -468,20 +470,36 @@ impl StreamDataFetcher {
                         // Health-check nodes before download to avoid slow
                         // timeouts against unreachable nodes
                         self.update_dead_nodes().await;
-                        // sync data
                         info!("syncing data of tx with sequence number {:?}..", tx.seq);
-                        let sync_timeout = Duration::from_millis(self.config.download_timeout_ms);
-                        let sync_result =
-                            tokio::time::timeout(sync_timeout, self.sync_data(&tx)).await;
-                        let sync_err = match sync_result {
-                            Ok(Ok(())) => {
-                                info!("data of tx with sequence number {:?} synced.", tx.seq);
-                                // Clear dead nodes on success
-                                self.dead_urls.lock().unwrap().clear();
-                                None
+
+                        // Step 1: Wait for file locations with timeout
+                        let fetch_timeout = Duration::from_millis(self.config.download_timeout_ms);
+                        let fetch_result = tokio::time::timeout(
+                            fetch_timeout,
+                            self.fetch_clients(tx.data_merkle_root),
+                        )
+                        .await;
+
+                        let sync_err = match fetch_result {
+                            Ok(clients) => {
+                                // Step 2: Download without overall timeout;
+                                // individual RPCs have their own timeout.
+                                match self.sync_data(&tx, clients).await {
+                                    Ok(()) => {
+                                        info!(
+                                            "data of tx with sequence number {:?} synced.",
+                                            tx.seq
+                                        );
+                                        self.dead_urls.lock().unwrap().clear();
+                                        None
+                                    }
+                                    Err(e) => Some(e),
+                                }
                             }
-                            Ok(Err(e)) => Some(e),
-                            Err(_) => Some(anyhow!("sync_data timed out for tx {:?}", tx_seq)),
+                            Err(_) => Some(anyhow!(
+                                "Timed out waiting for file location for tx {:?}",
+                                tx_seq
+                            )),
                         };
                         if let Some(e) = sync_err {
                             // Health-check nodes and mark dead ones
@@ -536,12 +554,12 @@ impl StreamDataFetcher {
                     }
                 }
                 Ok(None) => {
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     check_sync_progress = true;
                 }
                 Err(e) => {
                     error!("stream data sync error: e={:?}", e);
-                    tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(self.config.retry_wait_ms)).await;
                     check_sync_progress = true;
                 }
             }

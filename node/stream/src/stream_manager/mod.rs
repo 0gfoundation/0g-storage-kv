@@ -16,8 +16,6 @@ use self::{stream_data_fetcher::StreamDataFetcher, stream_replayer::StreamReplay
 
 pub struct StreamManager;
 
-pub const RETRY_WAIT_MS: u64 = 1000;
-
 impl StreamManager {
     pub async fn initialize(
         config: &StreamConfig,
