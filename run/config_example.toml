@@ -44,7 +44,7 @@ zgs_node_urls = ""
 
 # Max retries before skipping a failed download. 0 means retry forever.
 # max_download_retries = 0
-# Timeout for a single download attempt in milliseconds.
+# Timeout for waiting for file locations from indexer/nodes in milliseconds.
 # download_timeout_ms = 300000
 # Interval between download retry attempts in milliseconds.
 # download_retry_interval_ms = 5000

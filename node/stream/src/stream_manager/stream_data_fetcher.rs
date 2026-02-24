@@ -283,12 +283,11 @@ impl StreamDataFetcher {
             .spawn(download_with_proof(params, store), "download segment");
     }
 
-    async fn sync_data(&self, tx: &KVTransaction) -> Result<()> {
+    async fn sync_data(&self, tx: &KVTransaction, clients: Vec<ZgsClient>) -> Result<()> {
         if self.store.read().await.check_tx_completed(tx.seq)? {
             return Ok(());
         }
 
-        let clients = self.fetch_clients(tx.data_merkle_root).await;
         let file_info = kv_tx_to_file_info(tx);
 
         // Build DownloadContext with optional encryption
@@ -471,20 +470,37 @@ impl StreamDataFetcher {
                         // Health-check nodes before download to avoid slow
                         // timeouts against unreachable nodes
                         self.update_dead_nodes().await;
-                        // sync data
                         info!("syncing data of tx with sequence number {:?}..", tx.seq);
-                        let sync_timeout = Duration::from_millis(self.config.download_timeout_ms);
-                        let sync_result =
-                            tokio::time::timeout(sync_timeout, self.sync_data(&tx)).await;
-                        let sync_err = match sync_result {
-                            Ok(Ok(())) => {
-                                info!("data of tx with sequence number {:?} synced.", tx.seq);
-                                // Clear dead nodes on success
-                                self.dead_urls.lock().unwrap().clear();
-                                None
+
+                        // Step 1: Wait for file locations with timeout
+                        let fetch_timeout =
+                            Duration::from_millis(self.config.download_timeout_ms);
+                        let fetch_result = tokio::time::timeout(
+                            fetch_timeout,
+                            self.fetch_clients(tx.data_merkle_root),
+                        )
+                        .await;
+
+                        let sync_err = match fetch_result {
+                            Ok(clients) => {
+                                // Step 2: Download without overall timeout;
+                                // individual RPCs have their own timeout.
+                                match self.sync_data(&tx, clients).await {
+                                    Ok(()) => {
+                                        info!(
+                                            "data of tx with sequence number {:?} synced.",
+                                            tx.seq
+                                        );
+                                        self.dead_urls.lock().unwrap().clear();
+                                        None
+                                    }
+                                    Err(e) => Some(e),
+                                }
                             }
-                            Ok(Err(e)) => Some(e),
-                            Err(_) => Some(anyhow!("sync_data timed out for tx {:?}", tx_seq)),
+                            Err(_) => Some(anyhow!(
+                                "Timed out waiting for file location for tx {:?}",
+                                tx_seq
+                            )),
                         };
                         if let Some(e) = sync_err {
                             // Health-check nodes and mark dead ones

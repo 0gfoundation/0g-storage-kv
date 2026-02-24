@@ -44,10 +44,10 @@ build_config! {
     (encryption_key, (String), "".to_string())
 
     // stream data sync
-    (max_download_retries, (usize), 0)
-    (download_timeout_ms, (u64), 300000) // 5 minutes
-    (download_retry_interval_ms, (u64), 5000) // 5 seconds
-    (retry_wait_ms, (u64), 1000) // 1 second, wait between retries in data fetcher and replayer
+    (max_download_retries, (usize), 0) // 0 means retry forever
+    (download_timeout_ms, (u64), 300000) // timeout for waiting for file locations (5 min)
+    (download_retry_interval_ms, (u64), 5000) // interval between download retry attempts
+    (retry_wait_ms, (u64), 1000) // wait between polling iterations in data fetcher and replayer
 
     // db
     (db_dir, (String), "db".to_string())
