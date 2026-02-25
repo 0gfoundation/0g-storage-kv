@@ -13,8 +13,12 @@ stream_ids = ["000000000000000000000000000000000000000000000000000000000000f2bd"
 
 # Directory to store data.
 db_dir = "db"
+
 # Directory to store KV Metadata.
-kv_db_dir = "kv.DB"
+kv_db_file = "kv.DB"
+
+# Cache capacity for merkle tree nodes in bytes (default 32 MB).
+# merkle_node_cache_capacity = 33554432
 
 #######################################################################
 ###                     Log Sync Config Options                     ###
@@ -23,6 +27,45 @@ kv_db_dir = "kv.DB"
 blockchain_rpc_endpoint = ""
 log_contract_address = ""
 log_sync_start_block_number = 0
+
+# Force resync from start block number, ignoring any previously synced progress.
+# force_log_sync_from_start_block_number = false
+
+# Number of confirmations required before a block is considered final.
+# confirmation_block_count = 1
+
+# Number of logs to fetch per RPC query page.
+# log_page_size = 999
+
+# Maximum size of cached data in bytes (default 100 MB).
+# max_cache_data_size = 104857600
+
+# TTL for cached transaction sequences.
+# cache_tx_seq_ttl = 500
+
+# Number of retries on RPC rate limit errors.
+# rate_limit_retries = 100
+
+# Number of retries on RPC timeout errors.
+# timeout_retries = 100
+
+# Initial backoff in milliseconds for RPC retries.
+# initial_backoff = 500
+
+# Delay in milliseconds between recovery queries.
+# recover_query_delay = 50
+
+# Number of blocks from the latest to consider as finalized.
+# default_finalized_block_count = 100
+
+# Interval in minutes to remove finalized block data.
+# remove_finalized_block_interval_minutes = 30
+
+# Wait time in milliseconds for the watch loop.
+# watch_loop_wait_time_ms = 500
+
+# Timeout in seconds for blockchain RPC calls.
+# blockchain_rpc_timeout_secs = 120
 
 #######################################################################
 ###                     RPC Config Options                          ###
@@ -35,19 +78,44 @@ rpc_enabled = true
 rpc_listen_address = "0.0.0.0:6789"
 
 # Indexer endpoint to fetch storage node locations. Leave empty to use zgs_node_urls instead.
-indexer_url = "https://indexer-storage-turbo-testnet.0g.ai"
+indexer_url = ""
+
 # Static ZGS node list (used when indexer_url is empty).
 zgs_node_urls = ""
+
+# Number of chunks per segment for RPC responses.
+# rpc_chunks_per_segment = 1024
+
+# Maximum query length in bytes (default 256 KB).
+# max_query_len_in_bytes = 262144
+
+# Maximum response body size in bytes (default 30 MB).
+# max_response_body_in_bytes = 31457280
+
+# Timeout in seconds for ZGS node RPC calls.
+# zgs_rpc_timeout = 5
+
+#######################################################################
+###                     Encryption Options                          ###
+#######################################################################
+
+# Encryption key for data decryption during download and replay.
+# Must be a 64-character hex string (32 bytes). Optional 0x prefix is allowed.
+# encryption_key = ""
+
 #######################################################################
 ###                  Stream Data Sync Options                       ###
 #######################################################################
 
 # Max retries before skipping a failed download. 0 means retry forever.
 # max_download_retries = 0
+
 # Timeout for waiting for file locations from indexer/nodes in milliseconds.
 # download_timeout_ms = 300000
+
 # Interval between download retry attempts in milliseconds.
 # download_retry_interval_ms = 5000
+
 # Wait time between polling iterations in the data fetcher and replayer in milliseconds.
 # retry_wait_ms = 1000
 
