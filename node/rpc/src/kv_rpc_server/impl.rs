@@ -24,6 +24,13 @@ impl KeyValueRpcServerImpl {
         start_index: u64,
         len: u64,
     ) -> RpcResult<Option<ValueSegment>> {
+        if len == 0 {
+            return Ok(Some(ValueSegment {
+                version: pair.version,
+                data: vec![],
+                size: pair.end_index - pair.start_index,
+            }));
+        }
         if start_index > pair.end_index - pair.start_index {
             return Err(error::invalid_params(
                 "start_index",
@@ -63,6 +70,14 @@ impl KeyValueRpcServerImpl {
         start_index: u64,
         len: u64,
     ) -> RpcResult<Option<KeyValueSegment>> {
+        if len == 0 {
+            return Ok(Some(KeyValueSegment {
+                version: pair.version,
+                key: pair.key,
+                data: vec![],
+                size: pair.end_index - pair.start_index,
+            }));
+        }
         if start_index > pair.end_index - pair.start_index {
             return Err(error::invalid_params(
                 "start_index",
