@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import random
 from kv_test_framework.test_framework import KVTestFramework
 from utility.kv import (
@@ -38,6 +39,13 @@ class KVPutGetTest(KVTestFramework):
         self.data = {}
         # write empty stream
         self.write_streams()
+
+        # rpc edge case tests
+        self.test_len_zero()
+        self.test_len_one()
+        self.test_len_larger_than_value()
+        self.test_start_index_at_boundary()
+        self.test_nonexistent_key()
 
     def submit(
         self,
@@ -206,6 +214,107 @@ class KVPutGetTest(KVTestFramework):
 
             pair = self.kv_nodes[0].prev(stream_id, current_key, second_version)
         assert cnt == len(self.data.items()) - deleted
+
+        self.update_data(writes)
+
+    def _get_first_key_and_value(self):
+        """Get the first non-deleted key and its value from self.data."""
+        stream_id = to_stream_id(1)
+        for stream_id_key, value in sorted(self.data.items()):
+            sid, key = stream_id_key.split(",")
+            if sid == stream_id and value is not None:
+                return stream_id, key, value
+        raise AssertionError("no non-deleted key found")
+
+    def test_len_zero(self):
+        """len=0 should return metadata with empty data, not crash."""
+        stream_id, key, value = self._get_first_key_and_value()
+        node = self.kv_nodes[0]
+
+        # kv_getValue with len=0
+        res = node.kv_get_value(stream_id, key, 0, 0)
+        assert res is not None, "kv_getValue(len=0) returned None"
+        assert_equal(base64.b64decode(res["data"].encode("utf-8")), b"")
+        assert_equal(res["size"], len(value))
+
+        # kv_getFirst with len=0
+        res = node.kv_get_first(stream_id, 0, 0)
+        assert res is not None, "kv_getFirst(len=0) returned None"
+        assert_equal(base64.b64decode(res["data"].encode("utf-8")), b"")
+        assert res["size"] > 0
+
+        # kv_getLast with len=0
+        res = node.kv_get_last(stream_id, 0, 0)
+        assert res is not None, "kv_getLast(len=0) returned None"
+        assert_equal(base64.b64decode(res["data"].encode("utf-8")), b"")
+        assert res["size"] > 0
+
+        # kv_getNext with len=0
+        res = node.kv_get_next(stream_id, key, 0, 0)
+        assert res is not None, "kv_getNext(len=0) returned None"
+        assert_equal(base64.b64decode(res["data"].encode("utf-8")), b"")
+        assert res["size"] > 0
+
+        # kv_getPrev with len=0 (use last key so there's a prev)
+        last_pair = node.seek_to_last(stream_id)
+        res = node.kv_get_prev(stream_id, last_pair["key"], 0, 0)
+        assert res is not None, "kv_getPrev(len=0) returned None"
+        assert_equal(base64.b64decode(res["data"].encode("utf-8")), b"")
+        assert res["size"] > 0
+
+    def test_len_one(self):
+        """len=1 should return exactly 1 byte of data."""
+        stream_id, key, value = self._get_first_key_and_value()
+        node = self.kv_nodes[0]
+
+        res = node.kv_get_value(stream_id, key, 0, 1)
+        assert res is not None
+        data = base64.b64decode(res["data"].encode("utf-8"))
+        assert_equal(len(data), 1)
+        assert_equal(data, value[:1])
+        assert_equal(res["size"], len(value))
+
+        res = node.kv_get_first(stream_id, 0, 1)
+        assert res is not None
+        data = base64.b64decode(res["data"].encode("utf-8"))
+        assert_equal(len(data), 1)
+
+    def test_len_larger_than_value(self):
+        """len larger than remaining bytes should return clamped data."""
+        stream_id, key, value = self._get_first_key_and_value()
+        node = self.kv_nodes[0]
+
+        # read from midpoint with len larger than remaining bytes
+        mid = len(value) // 2
+        remaining = len(value) - mid
+        oversized_len = remaining + 1024
+        res = node.kv_get_value(stream_id, key, mid, oversized_len)
+        assert res is not None
+        data = base64.b64decode(res["data"].encode("utf-8"))
+        assert_equal(data, value[mid:])
+        assert_equal(res["size"], len(value))
+
+    def test_start_index_at_boundary(self):
+        """start_index at or past value size should return error."""
+        stream_id, key, value = self._get_first_key_and_value()
+        node = self.kv_nodes[0]
+
+        try:
+            node.kv_get_value(stream_id, key, len(value) + 1, 1)
+            assert False, "expected error for start_index past value size"
+        except Exception:
+            pass
+
+    def test_nonexistent_key(self):
+        """Querying a key that doesn't exist should return empty."""
+        stream_id = to_stream_id(1)
+        node = self.kv_nodes[0]
+        fake_key = "ff" * 32  # key that was never written
+
+        res = node.kv_get_value(stream_id, fake_key, 0, 1)
+        assert res is not None
+        assert_equal(base64.b64decode(res["data"].encode("utf-8")), b"")
+        assert_equal(res["size"], 0)
 
 
 if __name__ == "__main__":
