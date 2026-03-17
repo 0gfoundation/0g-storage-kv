@@ -28,6 +28,8 @@ pub trait DataStoreRead {
 
     fn next_tx_seq(&self) -> u64;
 
+    fn get_first_tx_seq(&self) -> Result<Option<u64>>;
+
     fn get_sync_progress(&self) -> Result<Option<(u64, H256)>>;
 
     fn get_block_hashes(&self) -> Result<Vec<(u64, BlockHashAndSubmissionIndex)>>;
@@ -49,6 +51,8 @@ pub trait DataStoreWrite {
     fn delete_block_hash_by_number(&self, block_number: u64) -> Result<()>;
 
     fn put_log_latest_block_number(&self, block_number: u64) -> Result<()>;
+
+    fn put_first_tx_seq(&self, first_tx_seq: u64) -> Result<()>;
 
     fn put_chunks_with_tx_hash(
         &self,

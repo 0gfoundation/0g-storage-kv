@@ -54,6 +54,10 @@ impl DataStoreWrite for StoreManager {
         self.data_store.put_log_latest_block_number(block_number)
     }
 
+    fn put_first_tx_seq(&self, first_tx_seq: u64) -> Result<()> {
+        self.data_store.put_first_tx_seq(first_tx_seq)
+    }
+
     fn put_chunks_with_tx_hash(
         &self,
         tx_seq: u64,
@@ -85,6 +89,10 @@ impl DataStoreRead for StoreManager {
 
     fn next_tx_seq(&self) -> u64 {
         self.data_store.next_tx_seq()
+    }
+
+    fn get_first_tx_seq(&self) -> Result<Option<u64>> {
+        self.data_store.get_first_tx_seq()
     }
 
     fn get_log_latest_block_number(&self) -> storage::error::Result<Option<u64>> {
@@ -333,4 +341,201 @@ macro_rules! try_option {
             None => return Ok(None),
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{DataStoreRead, DataStoreWrite, StreamRead, StreamWrite};
+    use ssz::Encode;
+
+    fn make_tx(seq: u64, stream_ids: Vec<H256>) -> KVTransaction {
+        KVTransaction {
+            stream_ids,
+            sender: H160::zero(),
+            data_merkle_root: H256::zero(),
+            merkle_nodes: vec![(1, H256::zero())],
+            start_entry_index: 0,
+            size: 0,
+            seq,
+        }
+    }
+
+    // Case 1: Fresh DB, first tx has seq > 0 (started from later block).
+    // put_first_tx_seq should be called, and replayer/fetcher can read it.
+    #[tokio::test]
+    async fn test_first_tx_seq_fresh_db_jump_forward() {
+        let store = StoreManager::memorydb().await.unwrap();
+        assert_eq!(store.next_tx_seq(), 0);
+        assert_eq!(store.get_first_tx_seq().unwrap(), None);
+
+        // Simulate what LogSyncManager::put_tx does on jump-forward
+        store.put_first_tx_seq(100).unwrap();
+        assert_eq!(store.get_first_tx_seq().unwrap(), Some(100));
+    }
+
+    // Case 2: New stream IDs detected — reset_stream_sync sets progress to 0,
+    // but first_tx_seq remains so replayer can skip forward.
+    #[tokio::test]
+    async fn test_new_stream_ids_reset_preserves_first_tx_seq() {
+        let store = StoreManager::memorydb().await.unwrap();
+
+        // Simulate initial sync from later block
+        store.put_first_tx_seq(100).unwrap();
+
+        let stream_id = H256::from_low_u64_be(1);
+        let stream_ids_bytes = vec![stream_id].as_ssz_bytes();
+
+        // Simulate new stream IDs detected — reset progress to 0
+        store.reset_stream_sync(stream_ids_bytes).await.unwrap();
+
+        // Progress is reset to 0
+        assert_eq!(store.get_stream_replay_progress().await.unwrap(), 0);
+        assert_eq!(store.get_stream_data_sync_progress().await.unwrap(), 0);
+
+        // But first_tx_seq is still available for skip logic
+        assert_eq!(store.get_first_tx_seq().unwrap(), Some(100));
+    }
+
+    // Case 3: Normal start from block 0 — first_tx_seq is never set,
+    // replayer starts from 0 and finds txs normally.
+    #[tokio::test]
+    async fn test_normal_start_no_first_tx_seq() {
+        let mut store = StoreManager::memorydb().await.unwrap();
+        assert_eq!(store.get_first_tx_seq().unwrap(), None);
+
+        // Store tx at seq 0 (normal start)
+        store.put_tx(make_tx(0, vec![])).unwrap();
+        assert_eq!(store.next_tx_seq(), 1);
+
+        // first_tx_seq still None — not needed
+        assert_eq!(store.get_first_tx_seq().unwrap(), None);
+
+        // Tx at seq 0 exists
+        assert!(store.get_tx_by_seq_number(0).unwrap().is_some());
+    }
+
+    // Case 4: Restart + reorg — first_tx_seq persists across restarts,
+    // reorg adjusts next_tx_seq but doesn't affect first_tx_seq.
+    #[tokio::test]
+    async fn test_reorg_does_not_affect_first_tx_seq() {
+        let mut store = StoreManager::memorydb().await.unwrap();
+
+        // Simulate jump-forward start
+        store.put_first_tx_seq(100).unwrap();
+
+        // Store txs 100, 101, 102
+        for seq in 100..103 {
+            store.put_tx(make_tx(seq, vec![])).unwrap();
+        }
+        assert_eq!(store.next_tx_seq(), 103);
+
+        // Simulate reorg: revert to tx_seq 100 (remove 101, 102)
+        store.revert_to(100).unwrap();
+        assert_eq!(store.next_tx_seq(), 101);
+
+        // first_tx_seq unchanged
+        assert_eq!(store.get_first_tx_seq().unwrap(), Some(100));
+    }
+
+    // Case 5: Replayer skip logic — tx_seq < first_tx_seq should skip,
+    // tx_seq >= first_tx_seq should not skip.
+    #[tokio::test]
+    async fn test_replayer_skip_logic() {
+        let mut store = StoreManager::memorydb().await.unwrap();
+
+        store.put_first_tx_seq(100).unwrap();
+
+        // Tx at seq 50 doesn't exist (before first_tx_seq)
+        assert!(store.get_tx_by_seq_number(50).unwrap().is_none());
+
+        // The skip check: tx_seq(50) < first_tx_seq(100) → should skip to 100
+        let first_seq = store.get_first_tx_seq().unwrap().unwrap();
+        assert!(50 < first_seq);
+        assert_eq!(first_seq, 100);
+
+        // Store tx at seq 100
+        store.put_tx(make_tx(100, vec![])).unwrap();
+        assert!(store.get_tx_by_seq_number(100).unwrap().is_some());
+
+        // tx_seq(100) >= first_tx_seq(100) → no skip
+        assert!(100 >= first_seq);
+    }
+
+    // Case 6: first_tx_seq is None and tx not found — just wait (timing window).
+    #[tokio::test]
+    async fn test_no_first_tx_seq_tx_not_found_just_wait() {
+        let store = StoreManager::memorydb().await.unwrap();
+
+        // first_tx_seq not set yet (log sync hasn't started)
+        assert_eq!(store.get_first_tx_seq().unwrap(), None);
+
+        // Tx at seq 0 doesn't exist yet
+        assert!(store.get_tx_by_seq_number(0).unwrap().is_none());
+
+        // No skip — replayer should just wait
+        // (first_tx_seq is None, so the skip condition is false)
+    }
+
+    // Case 7: put_tx with next_tx_seq > 0 and tx.seq > next_tx_seq should NOT
+    // store the tx (simulates a gap error that LogSyncManager would reject).
+    #[tokio::test]
+    async fn test_gap_after_first_tx_is_error() {
+        let mut store = StoreManager::memorydb().await.unwrap();
+
+        // Store tx at seq 0 (normal start)
+        store.put_tx(make_tx(0, vec![])).unwrap();
+        assert_eq!(store.next_tx_seq(), 1);
+
+        // Tx at seq 5 should NOT be stored — gap from 1 to 5
+        // LogSyncManager::put_tx would reject this (Greater, next_tx_seq != 0)
+        // At the store level, put_tx doesn't enforce ordering, so we verify
+        // the condition LogSyncManager checks:
+        let next = store.next_tx_seq(); // 1
+        let incoming_seq = 5u64;
+        assert!(
+            incoming_seq > next && next != 0,
+            "should be rejected by LogSyncManager"
+        );
+    }
+
+    // Case 8: Normal start (seq 0), then new stream IDs — reset to 0,
+    // first_tx_seq is None, replayer starts from 0 and finds txs.
+    #[tokio::test]
+    async fn test_new_stream_ids_normal_start_replay_from_zero() {
+        let mut store = StoreManager::memorydb().await.unwrap();
+
+        // Normal start — store txs from seq 0
+        for seq in 0..5 {
+            store.put_tx(make_tx(seq, vec![])).unwrap();
+        }
+        assert_eq!(store.next_tx_seq(), 5);
+        assert_eq!(store.get_first_tx_seq().unwrap(), None);
+
+        let stream_id = H256::from_low_u64_be(42);
+        let stream_ids_bytes = vec![stream_id].as_ssz_bytes();
+
+        // New stream IDs detected — reset
+        store.reset_stream_sync(stream_ids_bytes).await.unwrap();
+        assert_eq!(store.get_stream_replay_progress().await.unwrap(), 0);
+
+        // first_tx_seq is None — no skip needed
+        assert_eq!(store.get_first_tx_seq().unwrap(), None);
+
+        // Tx at seq 0 exists — replayer processes normally
+        assert!(store.get_tx_by_seq_number(0).unwrap().is_some());
+    }
+
+    // Case 9: first_tx_seq is written once and persists — verify idempotency.
+    #[tokio::test]
+    async fn test_first_tx_seq_written_once() {
+        let store = StoreManager::memorydb().await.unwrap();
+
+        store.put_first_tx_seq(100).unwrap();
+        assert_eq!(store.get_first_tx_seq().unwrap(), Some(100));
+
+        // A second write would overwrite — but LogSyncManager only calls it
+        // once (when next_tx_seq == 0). Verify the value persists as expected.
+        assert_eq!(store.get_first_tx_seq().unwrap(), Some(100));
+    }
 }

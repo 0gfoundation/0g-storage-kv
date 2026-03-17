@@ -15,6 +15,7 @@ use super::data_store::{COL_BLOCK_PROGRESS, COL_MISC, COL_TX, COL_TX_COMPLETED};
 
 const LOG_SYNC_PROGRESS_KEY: &str = "log_sync_progress";
 const NEXT_TX_KEY: &str = "next_tx_seq";
+const FIRST_TX_SEQ_KEY: &str = "first_tx_seq";
 const LOG_LATEST_BLOCK_NUMBER_KEY: &str = "log_latest_block_number_key";
 
 pub enum TxStatus {
@@ -129,6 +130,21 @@ impl TransactionStore {
         self.next_tx_seq.load(Ordering::SeqCst)
     }
 
+    pub fn put_first_tx_seq(&self, first_tx_seq: u64) -> Result<()> {
+        Ok(self.kvdb.put(
+            COL_MISC,
+            FIRST_TX_SEQ_KEY.as_bytes(),
+            &first_tx_seq.to_be_bytes(),
+        )?)
+    }
+
+    pub fn get_first_tx_seq(&self) -> Result<Option<u64>> {
+        self.kvdb
+            .get(COL_MISC, FIRST_TX_SEQ_KEY.as_bytes())?
+            .map(|data| decode_tx_seq(&data))
+            .transpose()
+    }
+
     #[instrument(skip(self))]
     pub fn put_progress(&self, progress: (u64, H256, Option<Option<u64>>)) -> Result<()> {
         let mut items = vec![(
@@ -207,4 +223,40 @@ fn decode_tx_seq(data: &[u8]) -> Result<u64> {
     Ok(u64::from_be_bytes(
         data.try_into().map_err(|e| anyhow!("{:?}", e))?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_store() -> TransactionStore {
+        let db = Arc::new(kvdb_memorydb::create(super::super::data_store::COL_NUM));
+        TransactionStore::new(db).unwrap()
+    }
+
+    #[test]
+    fn test_first_tx_seq_not_set() {
+        let store = create_test_store();
+        assert_eq!(store.get_first_tx_seq().unwrap(), None);
+    }
+
+    #[test]
+    fn test_first_tx_seq_persist_and_read() {
+        let store = create_test_store();
+        store.put_first_tx_seq(12345).unwrap();
+        assert_eq!(store.get_first_tx_seq().unwrap(), Some(12345));
+    }
+
+    #[test]
+    fn test_first_tx_seq_zero() {
+        let store = create_test_store();
+        store.put_first_tx_seq(0).unwrap();
+        assert_eq!(store.get_first_tx_seq().unwrap(), Some(0));
+    }
+
+    #[test]
+    fn test_fresh_db_next_tx_seq_is_zero() {
+        let store = create_test_store();
+        assert_eq!(store.next_tx_seq(), 0);
+    }
 }
