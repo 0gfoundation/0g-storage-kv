@@ -91,6 +91,14 @@ impl DataStore {
         self.tx_store.next_tx_seq()
     }
 
+    pub fn put_first_tx_seq(&self, first_tx_seq: u64) -> Result<()> {
+        self.tx_store.put_first_tx_seq(first_tx_seq)
+    }
+
+    pub fn get_first_tx_seq(&self) -> Result<Option<u64>> {
+        self.tx_store.get_first_tx_seq()
+    }
+
     pub fn revert_to(&self, tx_seq: u64) -> Result<()> {
         let start = if tx_seq != u64::MAX { tx_seq + 1 } else { 0 };
         let removed_txs = self.tx_store.remove_tx_after(start)?;

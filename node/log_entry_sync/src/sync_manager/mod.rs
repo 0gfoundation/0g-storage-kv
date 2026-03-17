@@ -299,11 +299,26 @@ impl LogSyncManager {
                 Some(self.put_tx_inner(tx).await)
             }
             std::cmp::Ordering::Greater => {
-                error!(
-                    "Unexpected transaction seq: next={} get={}",
-                    self.next_tx_seq, tx.seq
-                );
-                None
+                if self.next_tx_seq == 0 {
+                    // Fresh DB, log sync started from a later block.
+                    // Jump forward to the first available tx seq.
+                    warn!(
+                        "No prior tx stored, jumping to first available tx seq: {}",
+                        tx.seq
+                    );
+                    if let Err(e) = self.store.write().await.put_first_tx_seq(tx.seq) {
+                        error!("failed to persist first_tx_seq: e={:?}", e);
+                        return None;
+                    }
+                    self.next_tx_seq = tx.seq;
+                    Some(self.put_tx_inner(tx).await)
+                } else {
+                    error!(
+                        "Unexpected transaction seq: next={} get={}",
+                        self.next_tx_seq, tx.seq
+                    );
+                    None
+                }
             }
         }
     }

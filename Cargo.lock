@@ -7539,6 +7539,7 @@ dependencies = [
  "storage",
  "task_executor",
  "tempdir",
+ "tokio",
  "tokio-rusqlite",
  "tracing",
  "typenum",

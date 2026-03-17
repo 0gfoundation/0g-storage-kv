@@ -449,6 +449,36 @@ impl StreamDataFetcher {
                 check_sync_progress = false;
             }
 
+            // Skip forward if current tx_seq is before the first available tx
+            let first_tx_seq = self.store.read().await.get_first_tx_seq();
+            match first_tx_seq {
+                Ok(Some(first_seq)) if tx_seq < first_seq => {
+                    info!(
+                        "skipping data sync from tx_seq {} to first available tx_seq {}",
+                        tx_seq, first_seq
+                    );
+                    match self
+                        .store
+                        .write()
+                        .await
+                        .update_stream_data_sync_progress(tx_seq, first_seq)
+                        .await
+                    {
+                        Ok(next) => {
+                            tx_seq = next;
+                        }
+                        Err(e) => {
+                            error!("update stream data sync progress error: e={:?}", e);
+                            tx_seq = first_seq;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("get first_tx_seq error: e={:?}", e);
+                }
+                _ => {}
+            }
+
             info!("checking tx with sequence number {:?}..", tx_seq);
             let maybe_tx = self.store.read().await.get_tx_by_seq_number(tx_seq);
             match maybe_tx {

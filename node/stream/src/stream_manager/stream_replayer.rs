@@ -606,6 +606,36 @@ impl StreamReplayer {
                 check_replay_progress = false;
             }
 
+            // Skip forward if current tx_seq is before the first available tx
+            let first_tx_seq = self.store.read().await.get_first_tx_seq();
+            match first_tx_seq {
+                Ok(Some(first_seq)) if tx_seq < first_seq => {
+                    info!(
+                        "skipping replay from tx_seq {} to first available tx_seq {}",
+                        tx_seq, first_seq
+                    );
+                    match self
+                        .store
+                        .write()
+                        .await
+                        .update_stream_replay_progress(tx_seq, first_seq)
+                        .await
+                    {
+                        Ok(next) => {
+                            tx_seq = next;
+                        }
+                        Err(e) => {
+                            error!("update stream replay progress error: e={:?}", e);
+                            tx_seq = first_seq;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("get first_tx_seq error: e={:?}", e);
+                }
+                _ => {}
+            }
+
             info!("checking tx with sequence number {:?}..", tx_seq);
             let maybe_tx = self.store.read().await.get_tx_by_seq_number(tx_seq);
             match maybe_tx {
@@ -1245,5 +1275,256 @@ mod tests {
             }
             _ => panic!("expected Commit result"),
         }
+    }
+
+    /// Create a store with a tx at a custom seq, with optional first_tx_seq.
+    async fn setup_store_with_data_at_seq(
+        data: &[u8],
+        stream_id: H256,
+        seq: u64,
+        first_tx_seq: Option<u64>,
+    ) -> (Arc<RwLock<dyn Store>>, KVTransaction) {
+        let store_manager = StoreManager::memorydb().await.unwrap();
+        let store: Arc<RwLock<dyn Store>> = Arc::new(RwLock::new(store_manager));
+        let padded = pad_to_entries(data);
+        let tx = KVTransaction {
+            stream_ids: vec![stream_id],
+            sender: H160::zero(),
+            data_merkle_root: H256::zero(),
+            merkle_nodes: vec![(1, H256::zero())],
+            start_entry_index: 1,
+            size: data.len() as u64,
+            seq,
+        };
+        let tx_hash = tx.hash();
+        {
+            let mut s = store.write().await;
+            if let Some(first_seq) = first_tx_seq {
+                s.put_first_tx_seq(first_seq).unwrap();
+            }
+            // For seq > 0 on fresh DB, we need to jump next_tx_seq forward
+            // (simulating what LogSyncManager::put_tx does)
+            if seq > 0 {
+                // Store dummy txs is not feasible, so directly put the tx.
+                // The store's put_tx updates next_tx_seq to seq+1 internally.
+                // But TransactionStore::put_tx stores at tx.seq regardless of next_tx_seq.
+                s.put_tx(tx.clone()).unwrap();
+            } else {
+                s.put_tx(tx.clone()).unwrap();
+            }
+            assert!(s
+                .put_chunks_with_tx_hash(
+                    seq,
+                    tx_hash,
+                    ChunkArray {
+                        data: padded,
+                        start_index: 0,
+                    },
+                    None,
+                )
+                .unwrap());
+            assert!(s.finalize_tx_with_hash(seq, tx_hash).unwrap());
+        }
+        (store, tx)
+    }
+
+    /// Diagnostic test: verify replay() and put_stream work on a tx at seq 100.
+    #[tokio::test]
+    async fn test_replay_and_put_stream_at_seq_100() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+
+        let (store, tx) = setup_store_with_data_at_seq(&kv_data, stream_id, 100, Some(100)).await;
+
+        // Reset stream and set progress to 100 (as skip would do)
+        {
+            use ssz::Encode;
+            let s = store.write().await;
+            s.reset_stream_sync(vec![stream_id].as_ssz_bytes())
+                .await
+                .unwrap();
+            s.update_stream_replay_progress(0, 100).await.unwrap();
+        }
+        assert_eq!(
+            store
+                .read()
+                .await
+                .get_stream_replay_progress()
+                .await
+                .unwrap(),
+            100
+        );
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: None,
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
+            retry_wait_ms: 100,
+        };
+
+        let replayer = StreamReplayer::new(config, store.clone()).await.unwrap();
+        let result = replayer.replay(&tx).await.unwrap();
+        let result_str = result.to_string();
+
+        match result {
+            ReplayResult::Commit(seq, write_set, access_control_set) => {
+                assert_eq!(seq, 100);
+                store
+                    .write()
+                    .await
+                    .put_stream(
+                        seq,
+                        tx.data_merkle_root,
+                        result_str,
+                        Some((write_set, access_control_set)),
+                    )
+                    .await
+                    .unwrap();
+            }
+            other => panic!("expected Commit, got {}", other),
+        }
+
+        assert_eq!(
+            store
+                .read()
+                .await
+                .get_stream_replay_progress()
+                .await
+                .unwrap(),
+            101
+        );
+    }
+
+    /// Integration test: replayer run() skips from progress=0 to first_tx_seq=100,
+    /// then processes tx at seq 100 and advances progress to 101.
+    #[tokio::test]
+    async fn test_replayer_run_skips_to_first_tx_seq() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+
+        let (store, _tx) = setup_store_with_data_at_seq(&kv_data, stream_id, 100, Some(100)).await;
+
+        // Reset stream replay progress to 0 (simulating new stream IDs)
+        {
+            use ssz::Encode;
+            let s = store.write().await;
+            s.reset_stream_sync(vec![stream_id].as_ssz_bytes())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .read()
+                .await
+                .get_stream_replay_progress()
+                .await
+                .unwrap(),
+            0
+        );
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: None,
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
+            retry_wait_ms: 100,
+        };
+
+        let replayer = StreamReplayer::new(config, store.clone()).await.unwrap();
+
+        // Spawn replayer in background
+        let handle = tokio::spawn(async move {
+            replayer.run().await;
+        });
+
+        // Wait for the replayer to process tx 100
+        let mut progress = 0;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            progress = store
+                .read()
+                .await
+                .get_stream_replay_progress()
+                .await
+                .unwrap();
+            if progress > 100 {
+                break;
+            }
+        }
+
+        handle.abort();
+
+        // Replayer should have skipped 0-99 and processed tx 100
+        assert_eq!(
+            progress, 101,
+            "replayer should advance progress to 101 after processing tx 100"
+        );
+    }
+
+    /// Integration test: replayer run() with no first_tx_seq starts from 0 normally.
+    #[tokio::test]
+    async fn test_replayer_run_normal_start_from_zero() {
+        let stream_id = H256::from_low_u64_be(1);
+        let key = b"mykey";
+        let value = b"hello world";
+        let kv_data = build_kv_data(stream_id, key, value);
+
+        // Normal start: tx at seq 0, no first_tx_seq
+        let (store, _tx) = setup_store_with_data_at_seq(&kv_data, stream_id, 0, None).await;
+
+        // Initialize stream state
+        {
+            use ssz::Encode;
+            let s = store.write().await;
+            s.reset_stream_sync(vec![stream_id].as_ssz_bytes())
+                .await
+                .unwrap();
+        }
+
+        let config = StreamConfig {
+            stream_ids: vec![stream_id],
+            stream_set: HashSet::from([stream_id]),
+            encryption_key: None,
+            max_download_retries: 3,
+            download_timeout_ms: 300000,
+            download_retry_interval_ms: 1000,
+            retry_wait_ms: 100,
+        };
+
+        let replayer = StreamReplayer::new(config, store.clone()).await.unwrap();
+
+        let handle = tokio::spawn(async move {
+            replayer.run().await;
+        });
+
+        let mut progress = 0;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            progress = store
+                .read()
+                .await
+                .get_stream_replay_progress()
+                .await
+                .unwrap();
+            if progress > 0 {
+                break;
+            }
+        }
+
+        handle.abort();
+
+        assert_eq!(
+            progress, 1,
+            "replayer should advance progress to 1 after processing tx 0"
+        );
     }
 }

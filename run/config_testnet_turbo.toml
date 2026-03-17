@@ -26,6 +26,12 @@ kv_db_file = "kv.DB"
 
 blockchain_rpc_endpoint = "https://evmrpc-testnet.0g.ai"
 log_contract_address = "0x22E03a6A89B950F1c82ec5e74F8eCa321a105296"
+
+# Block number to start syncing log events from. If your stream IDs are new and
+# you know there is no data before a certain block, set this to that block number
+# to skip scanning earlier blocks. The node will automatically jump forward to the
+# first transaction it finds, so replayer and data fetcher won't get stuck on
+# non-existent earlier tx sequences.
 log_sync_start_block_number = 1
 
 # Force resync from start block number, ignoring any previously synced progress.
