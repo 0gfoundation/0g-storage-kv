@@ -9325,6 +9325,7 @@ dependencies = [
 [[package]]
 name = "zg-storage-client"
 version = "0.2.0"
+source = "git+https://github.com/0gfoundation/0g-storage-sdk-rust.git?rev=660268e4db07f356d9d3169989d53a1f0d062308#660268e4db07f356d9d3169989d53a1f0d062308"
 dependencies = [
  "aes 0.8.4",
  "anyhow",
