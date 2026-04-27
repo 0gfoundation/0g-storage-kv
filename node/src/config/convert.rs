@@ -45,7 +45,10 @@ impl ZgsKVConfig {
         let wallet_private_key = if self.wallet_private_key.is_empty() {
             None
         } else {
-            Some(parse_32byte_hex(&self.wallet_private_key, "wallet_private_key")?)
+            Some(parse_32byte_hex(
+                &self.wallet_private_key,
+                "wallet_private_key",
+            )?)
         };
         if encryption_key.is_some() && wallet_private_key.is_some() {
             return Err(
@@ -142,14 +145,8 @@ fn parse_32byte_hex(hex_str: &str, field_name: &str) -> Result<[u8; 32], String>
     }
     let mut key = [0u8; 32];
     for i in 0..32 {
-        key[i] = u8::from_str_radix(&hex_str[i * 2..i * 2 + 2], 16).map_err(|e| {
-            format!(
-                "Invalid hex in {} at position {}: {}",
-                field_name,
-                i * 2,
-                e
-            )
-        })?;
+        key[i] = u8::from_str_radix(&hex_str[i * 2..i * 2 + 2], 16)
+            .map_err(|e| format!("Invalid hex in {} at position {}: {}", field_name, i * 2, e))?;
     }
     Ok(key)
 }

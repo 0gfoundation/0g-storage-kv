@@ -999,10 +999,7 @@ mod tests {
         let mut reader = StreamReader::new(store.clone(), &tx);
 
         // Skip encryption header (v1 = 17 bytes)
-        reader
-            .skip(ENCRYPTION_HEADER_SIZE_V1 as u64)
-            .await
-            .unwrap();
+        reader.skip(ENCRYPTION_HEADER_SIZE_V1 as u64).await.unwrap();
 
         // Should now read the KV data correctly
         let version =
