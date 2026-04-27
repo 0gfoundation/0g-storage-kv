@@ -1796,6 +1796,7 @@ dependencies = [
  "ff 0.13.0",
  "generic-array",
  "group 0.13.0",
+ "hkdf",
  "pkcs8 0.10.2",
  "rand_core 0.6.4",
  "sec1 0.7.3",
@@ -9323,8 +9324,7 @@ dependencies = [
 
 [[package]]
 name = "zg-storage-client"
-version = "0.1.0"
-source = "git+https://github.com/0gfoundation/0g-storage-sdk-rust.git?branch=main#cb7d82ce4a7e615eb61560000514f6e32e854a53"
+version = "0.2.0"
 dependencies = [
  "aes 0.8.4",
  "anyhow",
@@ -9341,7 +9341,9 @@ dependencies = [
  "futures",
  "hex",
  "hex-literal",
+ "hkdf",
  "jsonrpsee",
+ "k256 0.13.3",
  "lazy_static",
  "libp2p",
  "log",
