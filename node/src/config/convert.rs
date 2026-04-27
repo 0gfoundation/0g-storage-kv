@@ -40,12 +40,24 @@ impl ZgsKVConfig {
         let encryption_key = if self.encryption_key.is_empty() {
             None
         } else {
-            Some(parse_encryption_key(&self.encryption_key)?)
+            Some(parse_32byte_hex(&self.encryption_key, "encryption_key")?)
         };
+        let wallet_private_key = if self.wallet_private_key.is_empty() {
+            None
+        } else {
+            Some(parse_32byte_hex(&self.wallet_private_key, "wallet_private_key")?)
+        };
+        if encryption_key.is_some() && wallet_private_key.is_some() {
+            return Err(
+                "encryption_key (v1 symmetric) and wallet_private_key (v2 ECIES) are mutually exclusive; configure at most one"
+                    .to_string(),
+            );
+        }
         Ok(StreamConfig {
             stream_ids,
             stream_set,
             encryption_key,
+            wallet_private_key,
             max_download_retries: self.max_download_retries,
             download_timeout_ms: self.download_timeout_ms,
             download_retry_interval_ms: self.download_retry_interval_ms,
@@ -119,18 +131,25 @@ impl ZgsKVConfig {
     }
 }
 
-fn parse_encryption_key(hex_str: &str) -> Result<[u8; 32], String> {
+fn parse_32byte_hex(hex_str: &str, field_name: &str) -> Result<[u8; 32], String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
     if hex_str.len() != 64 {
         return Err(format!(
-            "encryption_key must be 64 hex chars (32 bytes), got {} chars",
+            "{} must be 64 hex chars (32 bytes), got {} chars",
+            field_name,
             hex_str.len()
         ));
     }
     let mut key = [0u8; 32];
     for i in 0..32 {
-        key[i] = u8::from_str_radix(&hex_str[i * 2..i * 2 + 2], 16)
-            .map_err(|e| format!("Invalid hex in encryption_key at position {}: {}", i * 2, e))?;
+        key[i] = u8::from_str_radix(&hex_str[i * 2..i * 2 + 2], 16).map_err(|e| {
+            format!(
+                "Invalid hex in {} at position {}: {}",
+                field_name,
+                i * 2,
+                e
+            )
+        })?;
     }
     Ok(key)
 }

@@ -295,6 +295,8 @@ impl StreamDataFetcher {
             let base = DownloadContext::new(clients, 1, file_info, tx.data_merkle_root)?;
             if let Some(key) = &self.config.encryption_key {
                 base.with_encryption(*key)
+            } else if let Some(priv_key) = &self.config.wallet_private_key {
+                base.with_wallet_private_key(*priv_key)
             } else {
                 base
             }
@@ -310,7 +312,9 @@ impl StreamDataFetcher {
         let tx = Arc::new(tx.clone());
 
         // If encrypted, download segment 0 first to parse the encryption header
-        let start_entry = if self.config.encryption_key.is_some() {
+        let encryption_active =
+            self.config.encryption_key.is_some() || self.config.wallet_private_key.is_some();
+        let start_entry = if encryption_active {
             let first_seg_entries = cmp::min(ENTRIES_PER_SEGMENT as u64, tx_size_in_entry);
             let data = ctx.download_segment_padded(0, true).await?;
 
