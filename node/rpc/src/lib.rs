@@ -16,6 +16,7 @@ use jsonrpsee::http_server::{HttpServerBuilder, HttpServerHandle};
 use kv_rpc_server::KeyValueRpcServer;
 use std::collections::HashSet;
 use std::error::Error;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use storage_with_stream::Store;
@@ -43,7 +44,7 @@ pub fn build_client(url: &String, timeout: u64) -> Result<HttpClient, Box<dyn Er
         .build(url)?)
 }
 
-pub async fn run_server(ctx: Context) -> Result<HttpServerHandle, Box<dyn Error>> {
+pub async fn run_server(ctx: Context) -> Result<(HttpServerHandle, SocketAddr), Box<dyn Error>> {
     let server = HttpServerBuilder::default()
         .max_response_body_size(ctx.config.max_response_body_in_bytes)
         .build(ctx.config.listen_address)
@@ -62,5 +63,5 @@ pub async fn run_server(ctx: Context) -> Result<HttpServerHandle, Box<dyn Error>
     let handle = server.start(module)?;
     info!("Server started http://{}", addr);
 
-    Ok(handle)
+    Ok((handle, addr))
 }

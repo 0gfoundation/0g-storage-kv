@@ -95,7 +95,7 @@ impl ClientBuilder {
             live_stream_set,
         };
 
-        let rpc_handle = rpc::run_server(ctx)
+        let (rpc_handle, _addr) = rpc::run_server(ctx)
             .await
             .map_err(|e| format!("Unable to start HTTP RPC server: {:?}", e))?;
 
