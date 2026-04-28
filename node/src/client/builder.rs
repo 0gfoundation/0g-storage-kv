@@ -1,6 +1,8 @@
 use super::{Client, RuntimeContext};
+use ethereum_types::H256;
 use log_entry_sync::{LogSyncConfig, LogSyncEvent, LogSyncManager};
 use rpc::RPCConfig;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use storage_with_stream::Store;
@@ -70,7 +72,11 @@ impl ClientBuilder {
         Ok(self)
     }
 
-    pub async fn with_rpc(mut self, rpc_config: RPCConfig) -> Result<Self, String> {
+    pub async fn with_rpc(
+        mut self,
+        rpc_config: RPCConfig,
+        live_stream_set: Arc<RwLock<HashSet<H256>>>,
+    ) -> Result<Self, String> {
         self.indexer_url.clone_from(&rpc_config.indexer_url);
         self.zgs_nodes = Some(rpc_config.zgs_nodes.clone());
         self.zgs_rpc_timeout = Some(rpc_config.zgs_rpc_timeout);
@@ -86,6 +92,7 @@ impl ClientBuilder {
             config: rpc_config,
             shutdown_sender: executor.shutdown_sender(),
             store,
+            live_stream_set,
         };
 
         let rpc_handle = rpc::run_server(ctx)
