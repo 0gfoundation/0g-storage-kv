@@ -1,6 +1,6 @@
 #![allow(clippy::field_reassign_with_default)]
 
-use std::{collections::HashSet, str::FromStr, time::Duration};
+use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use crate::ZgsKVConfig;
 use ethereum_types::H256;
@@ -9,6 +9,7 @@ use log_entry_sync::{CacheConfig, ContractAddress, LogSyncConfig};
 use rpc::RPCConfig;
 use storage_with_stream::{log_store::log_manager::LogConfig, LogStorageConfig, StorageConfig};
 use stream::StreamConfig;
+use tokio::sync::RwLock;
 
 impl ZgsKVConfig {
     pub fn storage_config(&self) -> Result<StorageConfig, String> {
@@ -36,7 +37,9 @@ impl ZgsKVConfig {
         if stream_ids.is_empty() {
             error!("{}", format!("stream ids is empty"))
         }
-        let stream_set = HashSet::from_iter(stream_ids.iter().cloned());
+        let stream_set = Arc::new(RwLock::new(HashSet::from_iter(
+            stream_ids.iter().cloned(),
+        )));
         let encryption_key = if self.encryption_key.is_empty() {
             None
         } else {

@@ -97,7 +97,7 @@ async fn skippable(
         // if replayer is not up-to-date, always make can_write be true
         let mut can_write = replay_progress < tx.seq;
         for id in tx.stream_ids.iter() {
-            if !config.stream_set.contains(id) {
+            if !config.stream_set.read().await.contains(id) {
                 return Ok((false, false));
             }
             if !can_write && store.read().await.can_write(tx.sender, *id, tx.seq).await? {

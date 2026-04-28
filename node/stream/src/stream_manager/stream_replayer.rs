@@ -224,7 +224,7 @@ impl StreamReplayer {
         version: u64,
     ) -> Result<Option<ReplayResult>> {
         for stream_read in stream_read_set.stream_reads.iter() {
-            if !self.config.stream_set.contains(&stream_read.stream_id) {
+            if !self.config.stream_set.read().await.contains(&stream_read.stream_id) {
                 return Ok(Some(ReplayResult::TagsMismatch));
             }
             // check version confiction
@@ -1030,7 +1030,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: None,
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1076,7 +1076,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: Some([0x42u8; 32]),
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1122,7 +1122,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: Some([0x42u8; 32]),
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1166,7 +1166,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: Some([0x42u8; 32]),
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1208,7 +1208,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: Some([0x42u8; 32]),
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1260,7 +1260,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: Some(encryption_key),
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1380,7 +1380,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: None,
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1453,7 +1453,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: None,
             wallet_private_key: None,
             max_download_retries: 3,
@@ -1515,7 +1515,7 @@ mod tests {
 
         let config = StreamConfig {
             stream_ids: vec![stream_id],
-            stream_set: HashSet::from([stream_id]),
+            stream_set: Arc::new(RwLock::new(HashSet::from([stream_id]))),
             encryption_key: None,
             wallet_private_key: None,
             max_download_retries: 3,
