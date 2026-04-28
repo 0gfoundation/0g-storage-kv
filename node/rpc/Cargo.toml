@@ -22,6 +22,7 @@ futures-channel = "^0.3"
 ethereum-types = "0.14"
 storage_with_stream = { path = "../storage_with_stream" }
 kv_types = { path = "../kv_types" }
+eth2_ssz = "0.4.0"
 
 [dev-dependencies]
 serde_json = "1.0.127"

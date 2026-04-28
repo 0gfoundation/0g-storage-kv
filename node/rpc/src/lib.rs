@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate tracing;
 
+pub mod admin_rpc_server;
 mod config;
 mod error;
 mod kv_rpc_server;

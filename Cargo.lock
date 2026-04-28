@@ -6716,6 +6716,7 @@ version = "0.1.0"
 dependencies = [
  "append_merkle",
  "base64 0.13.1",
+ "eth2_ssz",
  "ethereum-types 0.14.1",
  "futures",
  "futures-channel",
