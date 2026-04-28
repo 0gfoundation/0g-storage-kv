@@ -41,7 +41,8 @@ build_config! {
     (zgs_rpc_timeout, (u64), 5) // 5 seconds
 
     // encryption
-    (encryption_key, (String), "".to_string())
+    (encryption_key, (String), "".to_string())  // v1 symmetric AES-256 key (32-byte hex)
+    (wallet_private_key, (String), "".to_string())  // v2 ECIES recipient secp256k1 private key (32-byte hex)
 
     // stream data sync
     (max_download_retries, (usize), 0) // 0 means retry forever

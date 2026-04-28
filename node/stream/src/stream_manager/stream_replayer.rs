@@ -19,7 +19,10 @@ use storage_with_stream::AccessControlOps;
 use storage_with_stream::Store;
 use tokio::sync::RwLock;
 
-use zg_storage_client::transfer::encryption::ENCRYPTION_HEADER_SIZE;
+use zg_storage_client::transfer::encryption::{
+    ENCRYPTION_HEADER_SIZE_V1, ENCRYPTION_HEADER_SIZE_V2, ENCRYPTION_VERSION_V1,
+    ENCRYPTION_VERSION_V2,
+};
 
 const MAX_LOAD_ENTRY_SIZE: u64 = 10;
 const STREAM_ID_SIZE: u64 = 32;
@@ -509,9 +512,19 @@ impl StreamReplayer {
             return Ok(ReplayResult::DataUnavailable);
         }
         let mut stream_reader = StreamReader::new(self.store.clone(), tx);
-        // Skip encryption header if encryption is configured
-        if self.config.encryption_key.is_some() {
-            stream_reader.skip(ENCRYPTION_HEADER_SIZE as u64).await?;
+        // Skip encryption header if encryption is configured. Header size depends
+        // on the version byte (v1: 17 bytes, v2: 50 bytes).
+        let encryption_active =
+            self.config.encryption_key.is_some() || self.config.wallet_private_key.is_some();
+        if encryption_active {
+            let version_byte = stream_reader.next(1).await?;
+            let header_size = match version_byte[0] {
+                ENCRYPTION_VERSION_V1 => ENCRYPTION_HEADER_SIZE_V1,
+                ENCRYPTION_VERSION_V2 => ENCRYPTION_HEADER_SIZE_V2,
+                v => bail!("Unsupported encryption version in stream header: {}", v),
+            };
+            // Already consumed 1 byte (the version), skip the remaining header bytes.
+            stream_reader.skip((header_size - 1) as u64).await?;
         }
         // parse and validate
         let version = self.parse_version(&mut stream_reader).await?;
@@ -837,7 +850,9 @@ mod tests {
     use super::*;
     use shared_types::ChunkArray;
     use storage_with_stream::StoreManager;
-    use zg_storage_client::transfer::encryption::{crypt_at, EncryptionHeader};
+    use zg_storage_client::transfer::encryption::{
+        crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V1,
+    };
 
     /// Build KV binary format data with one write entry.
     /// Format: version(8) + read_set(4) + write_set_count(4) + [stream_id(32) + key_len(3) + key + data_len(8)] + value_data + access_control(4)
@@ -983,8 +998,8 @@ mod tests {
         let (store, tx) = setup_store_with_data(&stored_data, stream_id).await;
         let mut reader = StreamReader::new(store.clone(), &tx);
 
-        // Skip encryption header
-        reader.skip(ENCRYPTION_HEADER_SIZE as u64).await.unwrap();
+        // Skip encryption header (v1 = 17 bytes)
+        reader.skip(ENCRYPTION_HEADER_SIZE_V1 as u64).await.unwrap();
 
         // Should now read the KV data correctly
         let version =
@@ -1017,6 +1032,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: None,
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1062,6 +1078,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1107,6 +1124,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1150,6 +1168,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1191,6 +1210,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some([0x42u8; 32]),
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1242,6 +1262,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: Some(encryption_key),
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1361,6 +1382,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: None,
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1433,6 +1455,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: None,
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,
@@ -1494,6 +1517,7 @@ mod tests {
             stream_ids: vec![stream_id],
             stream_set: HashSet::from([stream_id]),
             encryption_key: None,
+            wallet_private_key: None,
             max_download_retries: 3,
             download_timeout_ms: 300000,
             download_retry_interval_ms: 1000,

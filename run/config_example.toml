@@ -109,6 +109,11 @@ zgs_node_urls = ""
 # Must be a 64-character hex string (32 bytes). Optional 0x prefix is allowed.
 # encryption_key = ""
 
+# v2 (ECIES asymmetric) wallet private key for data decryption during download and replay.
+# Must be a 64-character hex string (32 bytes secp256k1 scalar). Optional 0x prefix is allowed.
+# Mutually exclusive with encryption_key. Configure at most one of the two.
+# wallet_private_key = ""
+
 #######################################################################
 ###                  Stream Data Sync Options                       ###
 #######################################################################
