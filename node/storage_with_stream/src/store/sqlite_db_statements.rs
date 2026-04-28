@@ -11,6 +11,11 @@ impl SqliteDBStatements {
             (:data_sync_progress, :stream_replay_progress, :stream_ids, :id)
     ";
 
+    pub const SEED_MISC_ROW_STATEMENT: &'static str = "
+        INSERT OR IGNORE INTO t_misc (id, data_sync_progress, stream_replay_progress, stream_ids)
+        VALUES (0, :data_sync_progress, :stream_replay_progress, X'')
+    ";
+
     pub const FINALIZE_TX_STATEMENT: &'static str = "
         INSERT OR REPLACE INTO 
             t_tx (tx_seq, result)
