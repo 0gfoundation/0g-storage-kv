@@ -33,12 +33,18 @@ impl AdminRpcServer for AdminRpcServerImpl {
         let merged: Vec<H256> = live.iter().cloned().collect();
         drop(live);
 
-        self.store
+        if let Err(e) = self
+            .store
             .write()
             .await
             .update_stream_ids(merged.as_ssz_bytes())
             .await
-            .map_err(|e| error::internal_error(format!("persist stream id: {:?}", e)))?;
+        {
+            // Roll back so a retry can re-attempt persistence; otherwise the
+            // fast-path check at the top would mask permanent DB-vs-memory drift.
+            self.live_stream_set.write().await.remove(&stream_id);
+            return Err(error::internal_error(format!("persist stream id: {:?}", e)));
+        }
 
         Ok(true)
     }
