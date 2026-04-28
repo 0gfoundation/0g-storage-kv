@@ -21,17 +21,24 @@ impl AdminRpcServer for AdminRpcServerImpl {
     async fn add_stream(&self, stream_id: H256) -> RpcResult<bool> {
         // Fast path: already registered.
         if self.live_stream_set.read().await.contains(&stream_id) {
+            debug!("admin_addStream idempotent hit for {:?}", stream_id);
             return Ok(true);
         }
 
-        // Compute merged set under write lock to serialize concurrent adds.
+        // Hold the live-set write guard across the DB write so that concurrent
+        // add_stream calls for different ids are fully serialized — preventing
+        // an interleave where a later caller's persisted set overwrites an
+        // earlier caller's (DB ends up missing the earlier id even though the
+        // live set has both). Readers (`skippable`, `validate_stream_read_set`)
+        // only take read locks, so this briefly blocks new readers but never
+        // deadlocks.
         let mut live = self.live_stream_set.write().await;
         if live.contains(&stream_id) {
+            debug!("admin_addStream idempotent hit for {:?}", stream_id);
             return Ok(true);
         }
         live.insert(stream_id);
         let merged: Vec<H256> = live.iter().cloned().collect();
-        drop(live);
 
         if let Err(e) = self
             .store
@@ -42,10 +49,12 @@ impl AdminRpcServer for AdminRpcServerImpl {
         {
             // Roll back so a retry can re-attempt persistence; otherwise the
             // fast-path check at the top would mask permanent DB-vs-memory drift.
-            self.live_stream_set.write().await.remove(&stream_id);
+            live.remove(&stream_id);
+            error!("admin_addStream persist failed for {:?}: {:?}", stream_id, e);
             return Err(error::internal_error(format!("persist stream id: {:?}", e)));
         }
 
+        info!("admin_addStream registered new stream {:?}", stream_id);
         Ok(true)
     }
 }
@@ -142,5 +151,34 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(db_ids, HashSet::from([h(0x1), h(0x2)]));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn add_stream_concurrent_different_ids_no_loss() {
+        let svc = Arc::new(fixture().await);
+        let s1 = svc.clone();
+        let s2 = svc.clone();
+        let (r1, r2) = tokio::join!(
+            async move { s1.add_stream(h(0x1)).await },
+            async move { s2.add_stream(h(0x2)).await },
+        );
+        assert!(r1.unwrap());
+        assert!(r2.unwrap());
+
+        // Live set has both
+        let live: HashSet<H256> = svc.live_stream_set.read().await.clone();
+        assert_eq!(live, HashSet::from([h(0x1), h(0x2)]));
+
+        // DB has both
+        let db: HashSet<H256> = svc
+            .store
+            .read()
+            .await
+            .get_holding_stream_ids()
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(db, HashSet::from([h(0x1), h(0x2)]));
     }
 }
