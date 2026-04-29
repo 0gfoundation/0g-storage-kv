@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(db_ids, HashSet::from([h(0x01), h(0x02)]));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn add_stream_concurrent_different_ids_no_loss() {
         let svc = Arc::new(fixture().await);
         let wallet = test_wallet();
@@ -340,5 +340,16 @@ mod tests {
             )
             .await;
         assert!(result.is_err(), "must reject malformed signature");
+
+        // No state mutation on rejection.
+        assert!(svc.live_stream_set.read().await.is_empty());
+        assert!(svc
+            .store
+            .read()
+            .await
+            .get_holding_stream_ids()
+            .await
+            .unwrap()
+            .is_empty());
     }
 }
