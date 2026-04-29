@@ -36,6 +36,7 @@ pub struct Context {
     pub shutdown_sender: Sender<ShutdownReason>,
     pub store: Arc<RwLock<dyn Store>>,
     pub live_stream_set: Arc<RwLock<HashSet<H256>>>,
+    pub chain_id: u64,
 }
 
 pub fn build_client(url: &String, timeout: u64) -> Result<HttpClient, Box<dyn Error>> {
@@ -55,6 +56,7 @@ pub async fn run_server(ctx: Context) -> Result<(HttpServerHandle, SocketAddr), 
         (admin_rpc_server::AdminRpcServerImpl {
             store: ctx.store.clone(),
             live_stream_set: ctx.live_stream_set.clone(),
+            chain_id: ctx.chain_id,
         })
         .into_rpc(),
     )?;

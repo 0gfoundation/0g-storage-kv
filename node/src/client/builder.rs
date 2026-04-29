@@ -88,11 +88,13 @@ impl ClientBuilder {
         let executor = require!("rpc", self, runtime_context).clone().executor;
         let store = require!("stream", self, store).clone();
 
+        let chain_id = rpc_config.chain_id;
         let ctx = rpc::Context {
             config: rpc_config,
             shutdown_sender: executor.shutdown_sender(),
             store,
             live_stream_set,
+            chain_id,
         };
 
         let (rpc_handle, _addr) = rpc::run_server(ctx)

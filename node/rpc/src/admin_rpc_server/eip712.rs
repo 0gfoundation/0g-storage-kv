@@ -1,8 +1,3 @@
-// Helpers are introduced in this task (Task 1) but only consumed in a later
-// task that wires them into the admin_addStream call site. Suppress dead-code
-// warnings for the gap; they'll be exercised once the call site lands.
-#![allow(dead_code)]
-
 use ethers::abi::{encode, Token};
 use ethers::types::{Address, Signature, H256, U256};
 use ethers::utils::keccak256;
