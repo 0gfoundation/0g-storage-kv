@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use storage_with_stream::Store;
 use storage_with_stream::{StorageConfig, StoreManager};
-use stream::{StreamConfig, StreamManager};
+use stream::{merge_persisted_streams, StreamConfig, StreamManager};
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
@@ -69,6 +69,20 @@ impl ClientBuilder {
 
         self.store = Some(store);
 
+        Ok(self)
+    }
+
+    /// Loads the persisted stream-id set from storage into the in-memory
+    /// `live_stream_set` cell so callers (the admin RPC, the stream manager)
+    /// observe a consistent view from the start. MUST run before `with_rpc`
+    /// — otherwise an `admin_addStream` request that arrives during startup
+    /// would compute its merged set against an empty in-memory cell and
+    /// overwrite the persisted set on disk.
+    pub async fn merge_streams(self, config: &StreamConfig) -> Result<Self, String> {
+        let store = require!("merge_streams", self, store).clone();
+        merge_persisted_streams(config, store)
+            .await
+            .map_err(|e| format!("Unable to merge persisted streams: {:?}", e))?;
         Ok(self)
     }
 

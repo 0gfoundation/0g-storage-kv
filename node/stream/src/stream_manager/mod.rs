@@ -25,8 +25,6 @@ impl StreamManager {
         zgs_rpc_timeout: u64,
         task_executor: TaskExecutor,
     ) -> Result<(StreamDataFetcher, StreamReplayer)> {
-        merge_persisted_streams(config, store.clone()).await?;
-
         let fetcher = StreamDataFetcher::new(
             config.clone(),
             store.clone(),
@@ -82,7 +80,7 @@ async fn skippable(
     }
 }
 
-pub(crate) async fn merge_persisted_streams(
+pub async fn merge_persisted_streams(
     config: &StreamConfig,
     store: Arc<RwLock<dyn Store>>,
 ) -> Result<()> {
