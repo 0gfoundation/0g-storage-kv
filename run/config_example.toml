@@ -77,6 +77,11 @@ log_sync_start_block_number = 0
 ###                     RPC Config Options                          ###
 #######################################################################
 
+# EVM chain id this KV node is associated with. Used for EIP-712 signature
+# verification on the admin RPC. Must match the chain id the frontend uses
+# when signing register-stream messages, otherwise registrations are rejected.
+chain_id = 16601
+
 # Whether to provide RPC service.
 rpc_enabled = true
 

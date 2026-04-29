@@ -103,6 +103,7 @@ impl ZgsKVConfig {
             max_query_len_in_bytes: self.max_query_len_in_bytes,
             max_response_body_in_bytes: self.max_response_body_in_bytes,
             zgs_rpc_timeout: self.zgs_rpc_timeout,
+            chain_id: self.chain_id,
         })
     }
 
