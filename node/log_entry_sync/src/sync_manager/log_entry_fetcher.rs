@@ -7,7 +7,7 @@ use contract_interface::{SubmissionNode, SubmitFilter, ZgsFlow};
 use ethers::abi::RawLog;
 use ethers::prelude::{BlockNumber, EthLogDecode, Http, Middleware, Provider};
 use ethers::providers::{HttpRateLimitRetryPolicy, RetryClient, RetryClientBuilder};
-use ethers::types::{Block, Log, H256};
+use ethers::types::{Block, Log, H160, H256};
 use futures::StreamExt;
 use jsonrpsee::tracing::{debug, error, info, warn};
 use kv_types::{submission_topic_to_stream_ids, KVTransaction};
@@ -271,10 +271,35 @@ impl LogEntryFetcher {
                                 data: log.data.to_vec(),
                             }) {
                                 Ok(event) => {
+                                    // Fetch the tx that emitted this log so we
+                                    // can use the authenticated tx.from for the
+                                    // permission check (NOT the caller-controlled
+                                    // event.sender / submission.submitter). See
+                                    // submission_event_to_transaction docstring.
+                                    let tx_hash = match log.transaction_hash {
+                                        Some(h) => h,
+                                        None => {
+                                            warn!("recover: log missing transaction_hash, skipping");
+                                            continue;
+                                        }
+                                    };
+                                    let tx_from = match provider.get_transaction(tx_hash).await {
+                                        Ok(Some(tx)) => tx.from,
+                                        Ok(None) => {
+                                            warn!("recover: get_transaction({:?}) returned None, skipping", tx_hash);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            warn!("recover: get_transaction({:?}) failed: {:?}, retrying next cycle", tx_hash, e);
+                                            tokio::time::sleep(Duration::from_millis(RETRY_WAIT_MS)).await;
+                                            break;
+                                        }
+                                    };
                                     if let Err(e) = recover_tx
                                         .send(submission_event_to_transaction(
                                             event,
                                             log.block_number.expect("block number exist").as_u64(),
+                                            tx_from,
                                         ))
                                         .and_then(|_| match sync_progress {
                                             Some(b) => {
@@ -552,8 +577,14 @@ impl LogEntryFetcher {
                             first_submission_index = Some(submit_filter.submission_index.as_u64());
                         }
 
-                        log_events
-                            .push(submission_event_to_transaction(submit_filter, block_number));
+                        // tx is already in scope (txs_hm[&log.transaction_index])
+                        // from the full-block fetch above; tx.from is the
+                        // authenticated EOA that signed Flow.submit.
+                        log_events.push(submission_event_to_transaction(
+                            submit_filter,
+                            block_number,
+                            tx.from,
+                        ));
                     }
 
                     info!("synced {} events", log_events.len());
@@ -762,11 +793,28 @@ pub enum LogFetchProgress {
     Reverted(u64),
 }
 
-fn submission_event_to_transaction(e: SubmitFilter, block_number: u64) -> LogFetchProgress {
+/// Build a KVTransaction from a decoded Submit event plus the
+/// authenticated chain-tx sender.
+///
+/// `tx_from` is the EOA that signed the Flow.submit transaction
+/// (`tx.from` from the chain), NOT the `submission.submitter` field
+/// inside the event. The two differ: `submission.submitter` is a
+/// caller-controlled struct field with no on-chain validation
+/// (anyone can set it to anyone's address), while `tx.from` is
+/// cryptographically authenticated by the tx signature. The KV
+/// node's write-permission check uses `KVTransaction.sender`, so
+/// authenticating that value is what gates "Alice's stream can only
+/// be written to by addresses Alice GRANTed." See
+/// https://github.com/0gfoundation/0g-storage-kv/issues/70.
+fn submission_event_to_transaction(
+    e: SubmitFilter,
+    block_number: u64,
+    tx_from: H160,
+) -> LogFetchProgress {
     LogFetchProgress::Transaction((
         KVTransaction {
             stream_ids: submission_topic_to_stream_ids(e.submission.tags.to_vec()),
-            sender: e.sender,
+            sender: tx_from,
             data_merkle_root: nodes_to_root(&e.submission.nodes),
             merkle_nodes: e
                 .submission
@@ -781,6 +829,53 @@ fn submission_event_to_transaction(e: SubmitFilter, block_number: u64) -> LogFet
         },
         block_number,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use contract_interface::SubmissionData;
+    use ethers::types::{Bytes, U256};
+
+    /// Pins the issue-70 fix: `submission_event_to_transaction` must
+    /// derive `KVTransaction.sender` from the authenticated chain-tx
+    /// signer (`tx_from`), NOT from the indexed event sender — which
+    /// under the new Flow contract equals `submission.submitter`, a
+    /// caller-controlled struct field with no on-chain validation.
+    ///
+    /// Regression: anyone could write to any stream by setting
+    /// submission.submitter to the admin's address.
+    #[test]
+    fn sender_is_tx_from_not_event_sender() {
+        let alice = H160::repeat_byte(0xaa); // claimed in submission.submitter
+        let bob = H160::repeat_byte(0xbb); // actual tx signer
+
+        let event = SubmitFilter {
+            sender: alice,
+            identity: [0u8; 32],
+            submission_index: U256::from(7u64),
+            start_pos: U256::zero(),
+            length: U256::from(256u64),
+            submission: SubmissionData {
+                length: U256::from(256u64),
+                tags: Bytes::default(),
+                nodes: vec![SubmissionNode {
+                    root: [1u8; 32],
+                    height: U256::from(0u64),
+                }],
+            },
+        };
+
+        let progress = submission_event_to_transaction(event, 99, bob);
+        let LogFetchProgress::Transaction((tx, block_number)) = progress else {
+            panic!("expected LogFetchProgress::Transaction");
+        };
+
+        assert_eq!(tx.sender, bob, "sender must be tx_from (bob), not event.sender (alice)");
+        assert_ne!(tx.sender, alice, "sender must not be the unauthenticated event field");
+        assert_eq!(tx.seq, 7);
+        assert_eq!(block_number, 99);
+    }
 }
 
 fn nodes_to_root(node_list: &[SubmissionNode]) -> DataRoot {
