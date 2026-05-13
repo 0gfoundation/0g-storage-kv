@@ -185,6 +185,9 @@ class KVNode(TestNode):
     def kv_get_holding_stream_ids(self):
         return self.rpc.kv_getHoldingStreamIds()
 
+    def kv_get_replay_progress(self):
+        return self.rpc.kv_getReplayProgress()
+
     def kv_has_write_permission(self, account, stream_id, key, version=None):
         return self.rpc.kv_hasWritePermission(
             [account, stream_id, self.hex_to_segment(key), version]

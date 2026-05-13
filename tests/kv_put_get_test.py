@@ -61,6 +61,19 @@ class KVPutGetTest(KVTestFramework):
         # test encrypted put/get
         self.write_streams_encrypted()
 
+        # kv_getReplayProgress: by now the kv node has folded every
+        # submitted tx (each write_streams* call waits for Commit),
+        # so applied_seq should cover the whole submitted range.
+        # firstTxSeq is None because this node started from genesis —
+        # no bootstrap hole.
+        progress = self.kv_nodes[0].kv_get_replay_progress()
+        assert progress["appliedSeq"] >= self.next_tx_seq - 1, (
+            f"replay progress {progress!r} did not cover next_tx_seq-1={self.next_tx_seq - 1}"
+        )
+        assert progress["firstTxSeq"] is None, (
+            f"firstTxSeq should be None on a fresh-start node: {progress!r}"
+        )
+
     def submit(
         self,
         version,

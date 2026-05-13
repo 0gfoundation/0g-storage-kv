@@ -27,6 +27,27 @@ pub struct KeyValueSegment {
     pub size: u64,
 }
 
+/// Per-node stream replay progress. Returned by `kv_getReplayProgress`
+/// so downstream consumers (e.g. an S3 gateway maintaining a local
+/// namespace cache) can answer "has this node folded tx-seq N yet?"
+/// without speculative reads.
+///
+/// `applied_seq` is monotonic across all streams the node watches —
+/// the replayer processes tx-seqs in order regardless of which
+/// stream(s) a given tx affects, so `applied_seq >= N` means every
+/// tx up to N has been classified (applied, skipped, or reverted).
+///
+/// `first_tx_seq` is set when the node started syncing from a block
+/// past genesis (bootstrap hole). Callers with a seq below
+/// `first_tx_seq` know that tx is permanently outside this node's
+/// window and should not be waited on.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayProgress {
+    pub applied_seq: u64,
+    pub first_tx_seq: Option<u64>,
+}
+
 mod base64 {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
