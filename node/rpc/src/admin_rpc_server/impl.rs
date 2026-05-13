@@ -69,7 +69,10 @@ impl AdminRpcServer for AdminRpcServerImpl {
             return Ok(true);
         }
         live.insert(stream_id);
-        let merged: Vec<H256> = live.iter().cloned().collect();
+        // Sort so the persisted Vec is deterministic — kv_getHoldingStreamIds
+        // returns this Vec verbatim and clients/tests depend on ascending order.
+        let mut merged: Vec<H256> = live.iter().cloned().collect();
+        merged.sort();
 
         if let Err(e) = self
             .store

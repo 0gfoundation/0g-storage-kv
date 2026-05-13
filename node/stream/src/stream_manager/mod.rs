@@ -91,7 +91,10 @@ pub async fn merge_persisted_streams(
     // merged = config ∪ persisted (preserves runtime-added streams)
     let mut merged_set = persisted_set.clone();
     merged_set.extend(config_set.iter().cloned());
-    let merged_ids: Vec<H256> = merged_set.iter().cloned().collect();
+    let mut merged_ids: Vec<H256> = merged_set.iter().cloned().collect();
+    // Sort so the persisted Vec has deterministic order — kv_getHoldingStreamIds
+    // returns this Vec verbatim and tests/clients depend on ascending order.
+    merged_ids.sort();
 
     let config_introduces_new = !config_set.is_subset(&persisted_set);
 
