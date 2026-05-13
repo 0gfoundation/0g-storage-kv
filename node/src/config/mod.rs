@@ -39,6 +39,7 @@ build_config! {
     (max_query_len_in_bytes, (u64), 1024 * 256) // 256 KB
     (max_response_body_in_bytes, (u32), 1024 * 1024 * 30) // 30MB
     (zgs_rpc_timeout, (u64), 5) // 5 seconds
+    (chain_id, (u64), 0) // EVM chain id for EIP-712 admin auth; operators MUST set this
 
     // encryption
     (encryption_key, (String), "".to_string())  // v1 symmetric AES-256 key (32-byte hex)

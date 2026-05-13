@@ -37,6 +37,13 @@ impl StreamStore {
             .call(|conn| {
                 // misc table
                 conn.execute(SqliteDBStatements::CREATE_MISC_TABLE_STATEMENT, [])?;
+                {
+                    let mut stmt = conn.prepare(SqliteDBStatements::SEED_MISC_ROW_STATEMENT)?;
+                    stmt.execute(named_params! {
+                        ":data_sync_progress": i64::MIN,
+                        ":stream_replay_progress": i64::MIN,
+                    })?;
+                }
                 // stream table
                 conn.execute(SqliteDBStatements::CREATE_STREAM_TABLE_STATEMENT, [])?;
                 for stmt in SqliteDBStatements::CREATE_STREAM_INDEX_STATEMENTS.iter() {
@@ -773,5 +780,27 @@ pub fn to_access_control_op_name(x: u8) -> &'static str {
         0x31 => "REVOKE_SPECIAL_WRITER_ROLE",
         0x32 => "RENOUNCE_SPECIAL_WRITER_ROLE",
         _ => "UNKNOWN",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssz::Encode;
+
+    #[tokio::test]
+    async fn update_stream_ids_works_on_fresh_db() {
+        let store = StreamStore::new_in_memory().await.unwrap();
+        store.create_tables_if_not_exist().await.unwrap();
+
+        // No reset_stream_sync seeding — this should work directly.
+        let id = ethereum_types::H256::from([0xab; 32]);
+        store
+            .update_stream_ids(vec![id].as_ssz_bytes())
+            .await
+            .unwrap();
+
+        let read = store.get_stream_ids().await.unwrap();
+        assert_eq!(read, vec![id]);
     }
 }

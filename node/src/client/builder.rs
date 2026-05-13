@@ -1,11 +1,13 @@
 use super::{Client, RuntimeContext};
+use ethereum_types::H256;
 use log_entry_sync::{LogSyncConfig, LogSyncEvent, LogSyncManager};
 use rpc::RPCConfig;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use storage_with_stream::Store;
 use storage_with_stream::{StorageConfig, StoreManager};
-use stream::{StreamConfig, StreamManager};
+use stream::{merge_persisted_streams, StreamConfig, StreamManager};
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
@@ -70,7 +72,25 @@ impl ClientBuilder {
         Ok(self)
     }
 
-    pub async fn with_rpc(mut self, rpc_config: RPCConfig) -> Result<Self, String> {
+    /// Loads the persisted stream-id set from storage into the in-memory
+    /// `live_stream_set` cell so callers (the admin RPC, the stream manager)
+    /// observe a consistent view from the start. MUST run before `with_rpc`
+    /// — otherwise an `admin_addStream` request that arrives during startup
+    /// would compute its merged set against an empty in-memory cell and
+    /// overwrite the persisted set on disk.
+    pub async fn merge_streams(self, config: &StreamConfig) -> Result<Self, String> {
+        let store = require!("merge_streams", self, store).clone();
+        merge_persisted_streams(config, store)
+            .await
+            .map_err(|e| format!("Unable to merge persisted streams: {:?}", e))?;
+        Ok(self)
+    }
+
+    pub async fn with_rpc(
+        mut self,
+        rpc_config: RPCConfig,
+        live_stream_set: Arc<RwLock<HashSet<H256>>>,
+    ) -> Result<Self, String> {
         self.indexer_url.clone_from(&rpc_config.indexer_url);
         self.zgs_nodes = Some(rpc_config.zgs_nodes.clone());
         self.zgs_rpc_timeout = Some(rpc_config.zgs_rpc_timeout);
@@ -82,13 +102,16 @@ impl ClientBuilder {
         let executor = require!("rpc", self, runtime_context).clone().executor;
         let store = require!("stream", self, store).clone();
 
+        let chain_id = rpc_config.chain_id;
         let ctx = rpc::Context {
             config: rpc_config,
             shutdown_sender: executor.shutdown_sender(),
             store,
+            live_stream_set,
+            chain_id,
         };
 
-        let rpc_handle = rpc::run_server(ctx)
+        let (rpc_handle, _addr) = rpc::run_server(ctx)
             .await
             .map_err(|e| format!("Unable to start HTTP RPC server: {:?}", e))?;
 
