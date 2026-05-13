@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::error;
 use crate::types::KeyValueSegment;
+use crate::types::ReplayProgress;
 use crate::types::ValueSegment;
 use crate::Context;
 use ethereum_types::H160;
@@ -317,6 +318,18 @@ impl KeyValueRpcServer for KeyValueRpcServerImpl {
         debug!("kv_getHoldingStreamIds()");
 
         Ok(self.ctx.store.read().await.get_holding_stream_ids().await?)
+    }
+
+    async fn get_replay_progress(&self) -> RpcResult<ReplayProgress> {
+        debug!("kv_getReplayProgress()");
+
+        let store = self.ctx.store.read().await;
+        let applied_seq = store.get_stream_replay_progress().await?;
+        let first_tx_seq = store.get_first_tx_seq()?;
+        Ok(ReplayProgress {
+            applied_seq,
+            first_tx_seq,
+        })
     }
 
     async fn has_write_permission(

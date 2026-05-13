@@ -3,7 +3,7 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 use zgs_rpc::types::Segment;
 
-use crate::types::{KeyValueSegment, ValueSegment};
+use crate::types::{KeyValueSegment, ReplayProgress, ValueSegment};
 
 #[rpc(server, client, namespace = "kv")]
 pub trait KeyValueRpc {
@@ -65,6 +65,17 @@ pub trait KeyValueRpc {
 
     #[method(name = "getHoldingStreamIds")]
     async fn get_holding_stream_ids(&self) -> RpcResult<Vec<H256>>;
+
+    /// Returns this node's stream-replay progress. See
+    /// `crate::types::ReplayProgress` for field semantics.
+    ///
+    /// Downstream callers (notably an S3 gateway caching the
+    /// (bucket,key)→root namespace) use this to detect cache lag
+    /// after an out-of-band write: when a Flow `Submit` event for
+    /// seq N is observed on-chain, the caller polls this RPC and
+    /// reads from KV once `applied_seq >= N`.
+    #[method(name = "getReplayProgress")]
+    async fn get_replay_progress(&self) -> RpcResult<ReplayProgress>;
 
     #[method(name = "hasWritePermission")]
     async fn has_write_permission(
