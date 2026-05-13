@@ -12,10 +12,6 @@ pub trait AdminRpc {
     /// `wallet`. Idempotent: returns `Ok(true)` whether or not the stream
     /// was already registered. Persisted across node restarts.
     #[method(name = "addStream")]
-    async fn add_stream(
-        &self,
-        stream_id: H256,
-        wallet: H160,
-        signature: String,
-    ) -> RpcResult<bool>;
+    async fn add_stream(&self, stream_id: H256, wallet: H160, signature: String)
+        -> RpcResult<bool>;
 }

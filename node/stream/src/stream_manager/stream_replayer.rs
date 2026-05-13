@@ -224,7 +224,13 @@ impl StreamReplayer {
         version: u64,
     ) -> Result<Option<ReplayResult>> {
         for stream_read in stream_read_set.stream_reads.iter() {
-            if !self.config.stream_set.read().await.contains(&stream_read.stream_id) {
+            if !self
+                .config
+                .stream_set
+                .read()
+                .await
+                .contains(&stream_read.stream_id)
+            {
                 return Ok(Some(ReplayResult::TagsMismatch));
             }
             // check version confiction

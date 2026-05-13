@@ -17,8 +17,7 @@ pub const REGISTER_STREAM_PURPOSE: &str = "register-stream";
 /// frontend's `Eip712Domain = { name, version, chainId }` — there is no
 /// `verifyingContract`, so the domain typehash uses only those three fields.
 pub fn domain_separator(chain_id: u64) -> [u8; 32] {
-    let domain_typehash =
-        keccak256(b"EIP712Domain(string name,string version,uint256 chainId)");
+    let domain_typehash = keccak256(b"EIP712Domain(string name,string version,uint256 chainId)");
 
     let encoded = encode(&[
         Token::FixedBytes(domain_typehash.to_vec()),
@@ -34,8 +33,7 @@ pub fn domain_separator(chain_id: u64) -> [u8; 32] {
 /// `purpose` is hashed (per EIP-712 string encoding); `wallet` and `streamId`
 /// are encoded as `address` and `bytes32` respectively.
 pub fn register_stream_struct_hash(wallet: Address, stream_id: [u8; 32]) -> [u8; 32] {
-    let typehash =
-        keccak256(b"RegisterStream(string purpose,address wallet,bytes32 streamId)");
+    let typehash = keccak256(b"RegisterStream(string purpose,address wallet,bytes32 streamId)");
 
     let encoded = encode(&[
         Token::FixedBytes(typehash.to_vec()),
@@ -48,11 +46,7 @@ pub fn register_stream_struct_hash(wallet: Address, stream_id: [u8; 32]) -> [u8;
 }
 
 /// Compute the full EIP-712 digest: `keccak256("\x19\x01" || domainSeparator || structHash)`.
-pub fn register_stream_digest(
-    wallet: Address,
-    stream_id: [u8; 32],
-    chain_id: u64,
-) -> [u8; 32] {
+pub fn register_stream_digest(wallet: Address, stream_id: [u8; 32], chain_id: u64) -> [u8; 32] {
     let domain = domain_separator(chain_id);
     let struct_h = register_stream_struct_hash(wallet, stream_id);
 
@@ -156,8 +150,7 @@ mod tests {
         let signature = wallet.sign_hash(H256::from(digest)).unwrap();
 
         let recovered =
-            recover_register_stream_signer(wallet.address(), stream_id, 1, &signature)
-                .unwrap();
+            recover_register_stream_signer(wallet.address(), stream_id, 1, &signature).unwrap();
         assert_ne!(recovered, wallet.address());
     }
 
@@ -176,13 +169,9 @@ mod tests {
         let digest = register_stream_digest(other_wallet.address(), stream_id, chain_id);
         let signature = signer.sign_hash(H256::from(digest)).unwrap();
 
-        let recovered = recover_register_stream_signer(
-            other_wallet.address(),
-            stream_id,
-            chain_id,
-            &signature,
-        )
-        .unwrap();
+        let recovered =
+            recover_register_stream_signer(other_wallet.address(), stream_id, chain_id, &signature)
+                .unwrap();
         // Should recover to signer (not other_wallet), so the equality check
         // at the call site (recovered == claimed wallet) will fail.
         assert_eq!(recovered, signer.address());

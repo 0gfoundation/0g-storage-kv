@@ -23,16 +23,14 @@ fn h(b: u8) -> H256 {
 /// independently of the production module — if the production module drifts,
 /// this test fails.
 fn register_stream_digest(wallet: Address, stream_id: [u8; 32], chain_id: u64) -> [u8; 32] {
-    let domain_typehash =
-        keccak256(b"EIP712Domain(string name,string version,uint256 chainId)");
+    let domain_typehash = keccak256(b"EIP712Domain(string name,string version,uint256 chainId)");
     let domain = keccak256(encode(&[
         Token::FixedBytes(domain_typehash.to_vec()),
         Token::FixedBytes(keccak256(b"0G Storage Scan").to_vec()),
         Token::FixedBytes(keccak256(b"1").to_vec()),
         Token::Uint(U256::from(chain_id)),
     ]));
-    let typehash =
-        keccak256(b"RegisterStream(string purpose,address wallet,bytes32 streamId)");
+    let typehash = keccak256(b"RegisterStream(string purpose,address wallet,bytes32 streamId)");
     let struct_hash = keccak256(encode(&[
         Token::FixedBytes(typehash.to_vec()),
         Token::FixedBytes(keccak256(b"register-stream").to_vec()),
@@ -81,10 +79,9 @@ async fn add_stream_then_visible_via_get_holding_stream_ids() {
     let client = HttpClientBuilder::default().build(&url).unwrap();
 
     // Sign a real RegisterStream payload.
-    let wallet: LocalWallet =
-        "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-            .parse()
-            .unwrap();
+    let wallet: LocalWallet = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        .parse()
+        .unwrap();
     let stream_id = h(0xab);
     let digest = register_stream_digest(wallet.address(), stream_id.to_fixed_bytes(), CHAIN_ID);
     let sig = wallet.sign_hash(EthersH256::from(digest)).unwrap();
@@ -137,10 +134,9 @@ async fn add_stream_rejects_invalid_signature_over_the_wire() {
     let client = HttpClientBuilder::default().build(&url).unwrap();
 
     // Signer is wallet1, but we claim wallet2 — should be rejected.
-    let signer: LocalWallet =
-        "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-            .parse()
-            .unwrap();
+    let signer: LocalWallet = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        .parse()
+        .unwrap();
     let other_wallet: LocalWallet =
         "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
             .parse()

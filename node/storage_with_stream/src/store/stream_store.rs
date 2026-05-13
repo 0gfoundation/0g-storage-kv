@@ -38,8 +38,7 @@ impl StreamStore {
                 // misc table
                 conn.execute(SqliteDBStatements::CREATE_MISC_TABLE_STATEMENT, [])?;
                 {
-                    let mut stmt =
-                        conn.prepare(SqliteDBStatements::SEED_MISC_ROW_STATEMENT)?;
+                    let mut stmt = conn.prepare(SqliteDBStatements::SEED_MISC_ROW_STATEMENT)?;
                     stmt.execute(named_params! {
                         ":data_sync_progress": i64::MIN,
                         ":stream_replay_progress": i64::MIN,

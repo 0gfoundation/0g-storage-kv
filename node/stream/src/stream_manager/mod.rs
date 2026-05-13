@@ -168,7 +168,9 @@ mod tests {
 
         // config only mentions [a]; b should NOT be lost
         let config = make_config(vec![h(0xa)]);
-        merge_persisted_streams(&config, store.clone()).await.unwrap();
+        merge_persisted_streams(&config, store.clone())
+            .await
+            .unwrap();
 
         let live: HashSet<H256> = config.stream_set.read().await.clone();
         assert!(live.contains(&h(0xa)));
@@ -198,9 +200,16 @@ mod tests {
 
         // config introduces b — reset is required
         let config = make_config(vec![h(0xa), h(0xb)]);
-        merge_persisted_streams(&config, store.clone()).await.unwrap();
+        merge_persisted_streams(&config, store.clone())
+            .await
+            .unwrap();
 
-        let progress = store.read().await.get_stream_data_sync_progress().await.unwrap();
+        let progress = store
+            .read()
+            .await
+            .get_stream_data_sync_progress()
+            .await
+            .unwrap();
         assert_eq!(progress, 0, "reset should zero data_sync_progress");
         let live: HashSet<H256> = config.stream_set.read().await.clone();
         assert_eq!(live, HashSet::from([h(0xa), h(0xb)]));
@@ -218,9 +227,16 @@ mod tests {
             .unwrap();
 
         let config = make_config(vec![h(0xa)]);
-        merge_persisted_streams(&config, store.clone()).await.unwrap();
+        merge_persisted_streams(&config, store.clone())
+            .await
+            .unwrap();
 
-        let progress = store.read().await.get_stream_data_sync_progress().await.unwrap();
+        let progress = store
+            .read()
+            .await
+            .get_stream_data_sync_progress()
+            .await
+            .unwrap();
         assert_eq!(progress, 100, "no reset when config introduces nothing new");
     }
 }

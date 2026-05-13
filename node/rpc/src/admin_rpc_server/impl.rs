@@ -42,9 +42,7 @@ impl AdminRpcServer for AdminRpcServerImpl {
             self.chain_id,
             &signature,
         )
-        .map_err(|e| {
-            error::invalid_params("signature", format!("recovery failed: {:?}", e))
-        })?;
+        .map_err(|e| error::invalid_params("signature", format!("recovery failed: {:?}", e)))?;
 
         if recovered != claimed {
             return Err(error::invalid_params(
@@ -86,10 +84,7 @@ impl AdminRpcServer for AdminRpcServerImpl {
                 "admin_addStream persist failed for {:?}: {:?}",
                 stream_id, e
             );
-            return Err(error::internal_error(format!(
-                "persist stream id: {:?}",
-                e
-            )));
+            return Err(error::internal_error(format!("persist stream id: {:?}", e)));
         }
 
         info!(
@@ -127,11 +122,7 @@ mod tests {
     fn sign_register(wallet: &LocalWallet, stream_id: H256, chain_id: u64) -> String {
         use super::super::eip712::register_stream_digest;
         use ethers::utils::hex;
-        let digest = register_stream_digest(
-            wallet.address(),
-            stream_id.to_fixed_bytes(),
-            chain_id,
-        );
+        let digest = register_stream_digest(wallet.address(), stream_id.to_fixed_bytes(), chain_id);
         let sig = wallet.sign_hash(EthersH256::from(digest)).unwrap();
         format!("0x{}", hex::encode(sig.to_vec()))
     }

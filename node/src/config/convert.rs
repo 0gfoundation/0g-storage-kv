@@ -37,9 +37,7 @@ impl ZgsKVConfig {
         if stream_ids.is_empty() {
             error!("{}", format!("stream ids is empty"))
         }
-        let stream_set = Arc::new(RwLock::new(HashSet::from_iter(
-            stream_ids.iter().cloned(),
-        )));
+        let stream_set = Arc::new(RwLock::new(HashSet::from_iter(stream_ids.iter().cloned())));
         let encryption_key = if self.encryption_key.is_empty() {
             None
         } else {
