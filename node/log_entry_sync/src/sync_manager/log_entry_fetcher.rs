@@ -831,6 +831,14 @@ fn submission_event_to_transaction(
     ))
 }
 
+fn nodes_to_root(node_list: &[SubmissionNode]) -> DataRoot {
+    let mut root: DataRoot = node_list.last().expect("not empty").root.into();
+    for next_node in node_list[..node_list.len() - 1].iter().rev() {
+        root = Sha3Algorithm::parent(&next_node.root.into(), &root);
+    }
+    root
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,17 +879,15 @@ mod tests {
             panic!("expected LogFetchProgress::Transaction");
         };
 
-        assert_eq!(tx.sender, bob, "sender must be tx_from (bob), not event.sender (alice)");
-        assert_ne!(tx.sender, alice, "sender must not be the unauthenticated event field");
+        assert_eq!(
+            tx.sender, bob,
+            "sender must be tx_from (bob), not event.sender (alice)"
+        );
+        assert_ne!(
+            tx.sender, alice,
+            "sender must not be the unauthenticated event field"
+        );
         assert_eq!(tx.seq, 7);
         assert_eq!(block_number, 99);
     }
-}
-
-fn nodes_to_root(node_list: &[SubmissionNode]) -> DataRoot {
-    let mut root: DataRoot = node_list.last().expect("not empty").root.into();
-    for next_node in node_list[..node_list.len() - 1].iter().rev() {
-        root = Sha3Algorithm::parent(&next_node.root.into(), &root);
-    }
-    root
 }
