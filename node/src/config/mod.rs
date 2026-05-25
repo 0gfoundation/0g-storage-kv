@@ -46,7 +46,7 @@ build_config! {
     (wallet_private_key, (String), "".to_string())  // v2 ECIES recipient secp256k1 private key (32-byte hex)
 
     // stream data sync
-    (max_download_retries, (usize), 0) // 0 means retry forever
+    (max_download_retries, (usize), 5) // 0 = retry forever; finite default lets the fetcher skip dead txs so replay can advance past them
     (download_timeout_ms, (u64), 300000) // timeout for waiting for file locations (5 min)
     (download_retry_interval_ms, (u64), 5000) // interval between download retry attempts
     (retry_wait_ms, (u64), 1000) // wait between polling iterations in data fetcher and replayer
