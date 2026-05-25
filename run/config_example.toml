@@ -125,9 +125,9 @@ zgs_node_urls = ""
 
 # Max top-level retries before the fetcher gives up on a tx's download
 # and lets the replayer mark it DownloadFailed. 0 = retry forever (blocks
-# replay on any dead tx). Default 30 keeps transient outages recoverable
-# while bounding the worst-case stall to a few hours.
-# max_download_retries = 30
+# replay on any dead tx). Default 5 skips dead txs in roughly a minute of
+# fast-failure or up to ~25 min of slow-failure (file-location-timeout).
+# max_download_retries = 5
 
 # Timeout for waiting for file locations from indexer/nodes in milliseconds.
 # download_timeout_ms = 300000
