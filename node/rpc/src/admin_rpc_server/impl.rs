@@ -65,7 +65,9 @@ impl AdminRpcServer for AdminRpcServerImpl {
         // deadlocks.
         let mut live = self.live_stream_set.write().await;
         if live.contains(&stream_id) {
-            debug!("admin_addStream idempotent hit for {:?}", stream_id);
+            // Race-loser path: another caller registered the same id between
+            // our fast-path read and this write-lock acquisition. No log —
+            // the fast-path debug covers the common idempotent case.
             return Ok(true);
         }
         live.insert(stream_id);
