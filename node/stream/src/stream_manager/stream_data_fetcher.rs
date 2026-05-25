@@ -292,7 +292,7 @@ impl StreamDataFetcher {
 
         // Build DownloadContext with optional encryption
         let ctx = {
-            let base = DownloadContext::new(clients, 1, file_info, tx.data_merkle_root)?;
+            let base = DownloadContext::new(clients, 0, file_info, tx.data_merkle_root)?;
             if let Some(key) = &self.config.encryption_key {
                 base.with_encryption(*key)
             } else if let Some(priv_key) = &self.config.wallet_private_key {
