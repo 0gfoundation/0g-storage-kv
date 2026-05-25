@@ -40,6 +40,10 @@ jobs:
       run: cargo test --no-fail-fast
       env:
         CARGO_INCREMENTAL: '0'
+        # Cap parallel rustc/ld processes so coverage-instrumented link steps
+        # (admin_add_stream_e2e.rs and friends) fit in the runner's ~7 GB.
+        # Without this, default jobs=4 OOMs at link time. See #82.
+        CARGO_BUILD_JOBS: '2'
         RUSTC_BOOTSTRAP: '1'
         RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests'
         RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests'
