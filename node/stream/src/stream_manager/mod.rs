@@ -85,15 +85,14 @@ pub async fn merge_persisted_streams(
     store: Arc<RwLock<dyn Store>>,
 ) -> Result<()> {
     let persisted_ids = store.read().await.get_holding_stream_ids().await?;
-    let persisted_set: HashSet<H256> = persisted_ids.iter().cloned().collect();
-    let config_set: HashSet<H256> = config.stream_ids.iter().cloned().collect();
+    let persisted_set: HashSet<H256> = persisted_ids.into_iter().collect();
+    let config_set: HashSet<H256> = config.stream_ids.iter().copied().collect();
 
     // merged = config ∪ persisted (preserves runtime-added streams)
-    let mut merged_set = persisted_set.clone();
-    merged_set.extend(config_set.iter().cloned());
-    let mut merged_ids: Vec<H256> = merged_set.iter().cloned().collect();
+    let merged_set: HashSet<H256> = persisted_set.union(&config_set).copied().collect();
     // Sort so the persisted Vec has deterministic order — kv_getHoldingStreamIds
     // returns this Vec verbatim and tests/clients depend on ascending order.
+    let mut merged_ids: Vec<H256> = merged_set.iter().copied().collect();
     merged_ids.sort();
 
     let config_introduces_new = !config_set.is_subset(&persisted_set);
