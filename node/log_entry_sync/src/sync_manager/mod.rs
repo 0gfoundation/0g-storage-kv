@@ -565,3 +565,4 @@ pub(crate) mod config;
 mod log_entry_fetcher;
 mod log_query;
 mod metrics;
+mod retry_policy;
