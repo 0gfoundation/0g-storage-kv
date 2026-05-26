@@ -1,4 +1,5 @@
 use crate::sync_manager::log_query::LogQuery;
+use crate::sync_manager::retry_policy::TransientRpcRetryPolicy;
 use crate::sync_manager::{metrics, RETRY_WAIT_MS};
 use crate::{ContractAddress, LogSyncConfig};
 use anyhow::{anyhow, bail, Result};
@@ -6,7 +7,7 @@ use append_merkle::{Algorithm, Sha3Algorithm};
 use contract_interface::{SubmissionNode, SubmitFilter, ZgsFlow};
 use ethers::abi::RawLog;
 use ethers::prelude::{BlockNumber, EthLogDecode, Http, Middleware, Provider};
-use ethers::providers::{HttpRateLimitRetryPolicy, RetryClient, RetryClientBuilder};
+use ethers::providers::{RetryClient, RetryClientBuilder};
 use ethers::types::{Block, Log, H160, H256};
 use futures::StreamExt;
 use jsonrpsee::tracing::{debug, error, info, warn};
@@ -46,7 +47,7 @@ impl LogEntryFetcher {
                             .connect_timeout(config.blockchain_rpc_timeout)
                             .build()?,
                     ),
-                    Box::new(HttpRateLimitRetryPolicy),
+                    Box::new(TransientRpcRetryPolicy),
                 ),
         ));
         // TODO: `error` types are removed from the ABI json file.
