@@ -61,6 +61,7 @@ arrive at the same state.
 | Signer key | `renew_private_key` in config, `ZGS_KV_RENEW_PRIVATE_KEY` overrides | Matches the existing `encryption_key` / `wallet_private_key` convention while letting deployments keep a spending key off disk. |
 | Operator control | `kv_getRenewStatus` plus `admin_renewNow` | Makes the integration test deterministic and lets operators confirm renewal without grepping logs. |
 | ACL cadence | Full effective-state snapshot every cycle, batch-first | Permission sets are small and change rarely; an unconditional weekly snapshot deletes all per-op age tracking and keeps permission state the freshest data in the stream. |
+| Deployment model | The stream admin runs the KV node; `renew_private_key` is the admin key; a single admin is recommended | ACL re-emission only validates for an admin sender, so this is forced, not chosen. It also routes every revoke through the operator's own tooling (revokes are admin-only), making the operational lock airtight for the dangerous case. |
 | Default state | On when `renew_private_key` is set; `renew_enabled` is a kill switch | Renewal is part of normal node operation, but a spending feature needs an off switch that does not require deleting the key. |
 
 ## Design
@@ -156,9 +157,11 @@ Startup:
 
 - Derive the signer address from `renew_private_key`. Log the address, never
   the key.
-- Check `is_admin(signer, stream_id, u64::MAX)` for each monitored stream and
-  WARN on any stream where the signer is not admin, since access-control
-  renewal for that stream will be rejected.
+- Check `is_admin(signer, stream_id, u64::MAX)` for each monitored stream.
+  The expected deployment is that the signer IS the stream admin (see the
+  deployment model decision); on a stream where it is not, value renewal
+  still runs for keys the signer can write, but ACL renewal is skipped with
+  an ERROR log.
 - Sleep `renew_startup_delay_secs` so sync and replay can warm up.
 
 Each cycle:
@@ -335,10 +338,23 @@ Four guards, layered:
 Detection is complete: replay is strictly sequential by tx_seq, so once
 `stream_replay_progress` reaches the batch's seq, every op in the window is
 already in `t_access_control` — the scan cannot be raced by a late arrival.
-And when all role changes flow through the operator's own tooling, the lock
-closes the race entirely. Note, however, that `GRANT_WRITER_ROLE` validates
-for any stream writer, not only admins, so multi-writer streams can have
-third-party ACL churn the lock cannot see.
+
+Under the deployment model (signer = admin), the lock covers the dangerous
+case outright: revokes and special-key flips are admin-only ops, and the
+admin's tooling honors its own node's flag. Third parties can still act in
+the window, but only in two ways:
+
+- **Grants** (`GRANT_WRITER_ROLE` validates for any existing writer) —
+  harmless: the snapshot emits nothing for an account it did not see, so
+  last-op-wins leaves the new grant standing.
+- **Renounces** of their own roles — resurrectable: the re-emitted grant
+  outranks the renounce. The corrective batch re-asserts a writer renounce
+  as an admin revoke, which has the same effect. An admin renounce cannot be
+  re-asserted at all — there is no `REVOKE_ADMIN_ROLE` op, so admin-ship is
+  only ever given up voluntarily — which is why a single-admin stream is the
+  recommended deployment: with no co-admin grants to re-emit, the case
+  cannot arise. On a multi-admin stream it is detected and logged at ERROR,
+  and only the resurrected admin can renounce again.
 
 Three residual risks remain, in decreasing severity:
 
@@ -464,7 +480,9 @@ Unit:
 - The post-replay conflict check: an op landing between snapshot_seq and
   batch_seq on a re-emitted pair is detected and re-asserted; ops outside
   the window or on untouched pairs are not. Writes admitted during the
-  wrong-permission interval are flagged.
+  wrong-permission interval are flagged. A resurrected writer renounce is
+  re-asserted as an admin revoke; a resurrected admin renounce is logged,
+  not corrected.
 - Permission skip and backoff behaviour.
 
 Migration:
@@ -501,6 +519,11 @@ to emit access-control ops the SDK cannot currently express:
 
 ## Operational notes
 
+- The renewal signer is the stream admin, so the stream's highest-privilege
+  key lives on the KV server. Prefer the `ZGS_KV_RENEW_PRIVATE_KEY` env var
+  over the config file, and treat the node's host accordingly. Granting
+  write access to users is unchanged: the admin issues grants via the SDK or
+  CLI, and the renewer's weekly snapshot preserves them from then on.
 - Renewal spends real funds on a timer. `renew_dry_run` and the requirement
   that a key be configured are the guardrails; the first cycle over an old
   stream will still re-upload a large amount of data, merely paced.
