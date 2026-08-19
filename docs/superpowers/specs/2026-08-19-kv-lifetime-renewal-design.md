@@ -280,7 +280,14 @@ but not yet replayed locally at snapshot time. Note that per-cycle full
 re-emission does NOT self-heal this: once t3 lands, u1-granted IS the
 effective state, and every later snapshot faithfully perpetuates it.
 
-Three guards, layered:
+The snapshot itself is taken at a single fixed seq: the snapshotter holds
+the store's read guard across its queries, which blocks the replayer's
+writes for the milliseconds involved, and pins `snapshot_seq` to the replay
+progress read under that same guard. Pausing anything for longer buys
+nothing — the race is in chain ordering, which local pauses cannot touch;
+a paused node is merely blind to competitors, not protected from them.
+
+Four guards, layered:
 
 1. **Caught-up gate** — the renewer snapshots only after local replay
    progress has reached the chain's latest submission (`numSubmissions` on
@@ -291,7 +298,13 @@ Three guards, layered:
    seconds. This is a documented convention, not enforcement: the KV node
    observes writes, it does not admit them, so it cannot block a third
    party's on-chain op.
-3. **Post-replay conflict check** — after the ACL batch replays, scan
+3. **Pre-submit re-check** — sync and replay keep running while the batch is
+   built and encrypted; immediately before the on-chain transaction is sent,
+   the renewer re-checks whether any ACL op has replayed past
+   `snapshot_seq`. If one has, the batch is discarded and rebuilt from a
+   fresh snapshot. One local query, and it shrinks the blind window from the
+   whole build-and-upload span to roughly one block confirmation.
+4. **Post-replay conflict check** — after the ACL batch replays, scan
    `t_access_control` for ops with `snapshot_seq < version < batch_seq`
    touching any (account, role) pair the batch re-emitted. Any hit means a
    role change landed inside the window and was overridden: re-assert it in
@@ -335,7 +348,7 @@ values, extended to permissions. It is deterministic across nodes, but it
 changes replay semantics, so it requires every KV node monitoring the stream
 to upgrade in step.
 
-Worst case with the v1 guards: a permission wrongly live for the minutes
+Worst case with the v1 guards: a permission wrongly live for the interval
 between the renewal batch replaying and the corrective batch replaying, with
 any writes it admitted flagged at ERROR for manual remediation. Without the
 guards: silent and permanent until an admin happens to re-issue the revoke.
@@ -428,6 +441,8 @@ Unit:
   and special-key transitions.
 - The ACL snapshot skips the signer's own admin grant and emits nothing for
   a stream with no access-control history.
+- The pre-submit re-check: an ACL op replayed after snapshot_seq aborts the
+  built batch; a clean window submits.
 - The post-replay conflict check: an op landing between snapshot_seq and
   batch_seq on a re-emitted pair is detected and re-asserted; ops outside
   the window or on untouched pairs are not. Writes admitted during the
