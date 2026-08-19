@@ -60,6 +60,7 @@ arrive at the same state.
 | Scope | Latest version per key, plus the stream's effective access-control state | Renewing values alone leaves the grant that authorizes the renewal signer in an expiring file — a fresh node would then reject the renewal writes and lose the data anyway. |
 | Signer key | `renew_private_key` in config, `ZGS_KV_RENEW_PRIVATE_KEY` overrides | Matches the existing `encryption_key` / `wallet_private_key` convention while letting deployments keep a spending key off disk. |
 | Operator control | `kv_getRenewStatus` plus `admin_renewNow` | Makes the integration test deterministic and lets operators confirm renewal without grepping logs. |
+| ACL cadence | Full effective-state snapshot every cycle, batch-first | Permission sets are small and change rarely; an unconditional weekly snapshot deletes all per-op age tracking and keeps permission state the freshest data in the stream. |
 | Default state | On when `renew_private_key` is set; `renew_enabled` is a kill switch | Renewal is part of normal node operation, but a spending feature needs an off switch that does not require deleting the key. |
 
 ## Design
@@ -118,6 +119,10 @@ path that already issues one `get_transaction` per submit log.
 If the timestamp cannot be resolved, the row is written with NULL and the
 backfill handles it.
 
+`remove_tx_after` (the reorg path) deletes the reverted seqs' `COL_TX_TIME`
+rows alongside their `COL_TX` and `COL_TX_COMPLETED` rows, so a re-orged seq
+cannot briefly carry the old chain's timestamp.
+
 ### 3. Backfilling legacy rows
 
 Rows written before this change have NULL timestamps. On startup, if any NULL
@@ -137,9 +142,10 @@ This costs roughly 50-100 RPC calls, once. It uses logs rather than
 historical state, so it does not require an archive node. Precision is not
 important: the threshold is 180 days against a 1-year lifetime.
 
-If the backfill cannot run (RPC unavailable), NULL rows are treated as stale
-and the renewer proceeds; this is safe but may renew data earlier than
-necessary, so the failure is logged at WARN.
+If the backfill cannot run (RPC unavailable), NULL rows are deferred — not
+renewed — the failure is logged at WARN, and the backfill is retried at the
+next cycle. Treating NULL as stale would spend real fees re-uploading
+possibly-fresh data on nothing more than a transient RPC outage.
 
 ### 4. The renewer
 
@@ -165,14 +171,15 @@ Each cycle:
    FROM t_stream
    WHERE stream_id = :stream_id AND key > :cursor
    GROUP BY stream_id, key
-   HAVING updated_at IS NULL OR updated_at <= :cutoff
+   HAVING updated_at <= :cutoff
    ORDER BY key ASC
    LIMIT :limit
    ```
 
    SQLite's bare-column rule returns the other columns from the `MAX(version)`
    row. Pagination is on `key` so a cycle interrupted by a restart resumes
-   cleanly.
+   cleanly. NULL `updated_at` rows are excluded by the comparison — they are
+   the backfill's job (section 3), never the scanner's.
 3. **Filter** — skip and warn on keys where
    `has_write_permission(signer, stream_id, key, u64::MAX)` is false, or where
    the value bytes are not present locally (a tx the fetcher gave up on).
@@ -185,11 +192,13 @@ Each cycle:
    `renew_batch_max_keys` is reached. A value larger than the batch cap
    becomes its own batch. `version` is `u64::MAX`, making every renewal an
    unconditional write that can never trip `VersionConfliction`.
-5. **Access control** — for each stream whose effective access-control state
-   has any op older than the cutoff, the stream's first batch of the cycle
-   also carries that state re-emitted as fresh grants (see section 5). A
-   stream with stale grants but no stale values still gets a batch, carrying
-   access control alone.
+5. **Access control** — every cycle, each stream where the signer holds
+   admin gets one small batch re-emitting the stream's full effective
+   access-control state as fresh grants (see section 5). This batch goes out
+   FIRST, before any value batches, so the window the operational lock must
+   cover is seconds rather than the length of the drain. Emission is
+   unconditional — permission sets are small, so a weekly snapshot costs a
+   few hundred bytes and removes any need to track per-op ages.
 6. **Upload** — `build() -> encode() -> DataInMemory -> Uploader::upload`,
    with `tags = build_tags()`. Two non-defaults matter:
    - `skip_tx = false`. The SDK default of `true` skips the on-chain
@@ -201,6 +210,11 @@ Each cycle:
      lands in plaintext and every reader of that stream breaks.
 
    `fee` stays 0, letting the SDK compute it from `pricePerSector`.
+
+   A storage-node response indicating the file is already finalized counts as
+   success: the on-chain submission — the thing that renews the lifetime —
+   has already landed by the time segments are pushed, and nodes deduplicate
+   data by merkle root.
 7. **Drain** — repeat 2-6 until a scan pass returns nothing, pausing
    `renew_pause_between_batches_ms` between uploads.
 8. **Verify** — each upload yields the batch's merkle root, which is resolved
@@ -230,13 +244,15 @@ last-op-wins rule the store's permission queries use:
 
 Only grants are re-emitted; revocations need not be, because absence is the
 default. A stream that never had any access-control op emits nothing and
-stays open, matching its original state.
+stays open, matching its original state. The signer's own admin grant is
+deliberately skipped: the replayer drops a `GRANT_ADMIN_ROLE` whose account
+equals the file's sender (`parse_access_control_data`), and on a fresh resync
+the auto-admin rule below re-establishes it anyway.
 
-Re-emission is triggered per stream when the oldest op in the effective set is
-older than the cutoff — that op is the one closest to expiring, and losing it
-is what breaks the permission chain. Re-emitting the whole effective set at
-once keeps the reconstruction trivially correct and costs only a few hundred
-bytes, since access-control sets are small relative to values.
+The full effective set is re-emitted every cycle rather than when ops near
+expiry. The set is small — permissions change rarely — so the cost is a few
+hundred bytes per stream per week, and the snapshot approach needs no per-op
+age tracking at all.
 
 `validate_access_control_set` computes the admin set from store state *before*
 applying the file's own ops, so a file cannot bootstrap its own authority. Two
@@ -247,6 +263,46 @@ cases follow:
   file's sender, and the re-emitted grants validate.
 - On a node where some access-control rows survive, the renewal signer must
   genuinely hold admin. This is the case the startup check warns about.
+
+#### The revocation race
+
+Re-emitting effective state is only correct if the snapshot is current.
+Because permission ops are themselves on-chain writes that this node merely
+replays, there is a race:
+
+```
+t1 grant u1 → [snapshot: sees only t1] → t2 revoke u1 → t3 renewal file
+```
+
+The snapshot sees u1 granted, t3 re-emits the grant, and last-op-wins makes
+the revoked u1 writable again. The same happens when t2 is already on-chain
+but not yet replayed locally at snapshot time. Note that per-cycle full
+re-emission does NOT self-heal this: once t3 lands, u1-granted IS the
+effective state, and every later snapshot faithfully perpetuates it.
+
+Three guards, layered:
+
+1. **Caught-up gate** — the renewer snapshots only after local replay
+   progress has reached the chain's latest submission (`numSubmissions` on
+   the flow contract, one RPC). Removes the replay-lag variant.
+2. **Operational lock** — `kv_getRenewStatus` exposes
+   `aclRenewalInProgress`; operators MUST hold role changes while it is
+   true. The ACL batch is emitted first each cycle, so the flag is up for
+   seconds. This is a documented convention, not enforcement: the KV node
+   observes writes, it does not admit them, so it cannot block a third
+   party's on-chain op.
+3. **Post-replay conflict check** — after the ACL batch replays, scan
+   `t_access_control` for ops with `snapshot_seq < version < batch_seq`
+   touching any (account, role) pair the batch re-emitted. Any hit means a
+   role change landed inside the window and was overridden: re-assert it in
+   a corrective batch and log at ERROR. This is the safety net that needs
+   nobody's cooperation, and it is mandatory — without it a resurrected
+   grant persists silently forever.
+
+Worst case with all three: a permission wrongly restored for the minutes
+between the renewal batch replaying and the corrective batch replaying,
+loudly logged. Without them: silent and permanent until an admin happens to
+re-issue the revoke.
 
 ### 6. Renewal tracking
 
@@ -287,18 +343,28 @@ renew_max_attempts = 3
 ```
 
 `renew_private_key` is distinct from `wallet_private_key`, which is an ECIES
-decryption key and holds no funds. Chain RPC endpoint, indexer URL and static
+decryption key and holds no funds. The `build_config!` macro reads only the
+config file and CLI, so the env-var override is a small piece of custom code
+in the config conversion layer. Chain RPC endpoint, indexer URL and static
 node list are reused from the existing configuration. The env var takes
 precedence over the config file when both are set.
 
 ### 8. RPC
 
 - `kv_getRenewStatus` — last cycle start and end, keys scanned, renewed,
-  skipped by permission, skipped for missing data, bytes uploaded, and the
-  list of keys stuck past `renew_max_attempts`.
+  skipped by permission, skipped for missing data, bytes uploaded, the list
+  of keys stuck past `renew_max_attempts`, and `aclRenewalInProgress` (the
+  operational-lock flag from section 5).
 - `admin_renewNow` — triggers a cycle immediately, behind the same EIP-712
-  auth as `admin_addStream`. Returns whether a cycle was started or one was
-  already running.
+  domain as `admin_addStream` but with its own message shape:
+  `{ purpose: "renew-now", wallet, issuedAt }`, where `issuedAt` must be
+  within a short freshness window so a captured signature cannot be replayed
+  later. Returns whether a cycle was started or one was already running.
+
+The status cell is shared state created before the RPC server starts:
+`with_rpc` runs earlier in the builder chain than the renewer (`start_node`
+calls `with_rpc` before `with_stream`), so the cell is constructed up front
+and handed to both — the same pattern `stream_set` already uses.
 
 ## Error handling
 
@@ -309,7 +375,7 @@ precedence over the config file when both are set.
 | Signer is not admin on a stream | Warn at startup; values still renew, access control does not |
 | Upload fails (RPC, node, revert) | Record error, back off, retry next cycle; never crash the node |
 | Signer balance too low | Abort the cycle with an ERROR log; retry next cycle |
-| Chain probe or backfill fails | Warn; treat NULL timestamps as stale and continue |
+| Chain probe or backfill fails | Warn; defer NULL-timestamp rows and retry the backfill next cycle |
 | Replay does not catch up within the verify timeout | Warn; verification deferred to the next cycle |
 
 ## Testing
@@ -324,9 +390,11 @@ Unit:
 - Batch packing against both caps, including an oversized single value.
 - Effective access-control reconstruction: grant, revoke, re-grant, renounce,
   and special-key transitions.
-- Access-control re-emission fires when the oldest op in the effective set
-  crosses the cutoff, and not before, including a stream with stale grants but
-  no stale values.
+- The ACL snapshot skips the signer's own admin grant and emits nothing for
+  a stream with no access-control history.
+- The post-replay conflict check: an op landing between snapshot_seq and
+  batch_seq on a re-emitted pair is detected and re-asserted; ops outside
+  the window or on untouched pairs are not.
 - Permission skip and backoff behaviour.
 
 Migration:
