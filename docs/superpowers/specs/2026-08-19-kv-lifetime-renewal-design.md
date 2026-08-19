@@ -62,6 +62,7 @@ arrive at the same state.
 | Operator control | `kv_getRenewStatus` plus `admin_renewNow` | Makes the integration test deterministic and lets operators confirm renewal without grepping logs. |
 | ACL cadence | Full effective-state snapshot every cycle, batch-first | Permission sets are small and change rarely; an unconditional weekly snapshot deletes all per-op age tracking and keeps permission state the freshest data in the stream. |
 | Deployment model | The stream admin runs the KV node; `renew_private_key` is the admin key; a single admin is recommended | ACL re-emission only validates for an admin sender, so this is forced, not chosen. It also routes every revoke through the operator's own tooling (revokes are admin-only), making the operational lock airtight for the dangerous case. |
+| Race handling | Prevent cheaply, detect always, remediate manually | The race cannot be eliminated from an observer node — only the deferred v2 replayer rule can. Correction machinery (re-assert loops, renounce mapping) added complexity without a guarantee, so conflicts are detected, logged at ERROR, and left to the admin. |
 | Default state | On when `renew_private_key` is set; `renew_enabled` is a kill switch | Renewal is part of normal node operation, but a spending feature needs an off switch that does not require deleting the key. |
 
 ## Design
@@ -267,125 +268,77 @@ cases follow:
 - On a node where some access-control rows survive, the renewal signer must
   genuinely hold admin. This is the case the startup check warns about.
 
-#### The revocation race
+#### The revocation race — IMPORTANT NOTICE
 
 Re-emitting effective state is only correct if the snapshot is current.
-Because permission ops are themselves on-chain writes that this node merely
-replays, there is a race:
+Because permission ops are on-chain writes that this node merely replays,
+there is a race that CANNOT be fully eliminated:
 
 ```
 t1 grant u1 → [snapshot: sees only t1] → t2 revoke u1 → t3 renewal file
 ```
 
 The snapshot sees u1 granted, t3 re-emits the grant, and last-op-wins makes
-the revoked u1 writable again. The same happens when t2 is already on-chain
-but not yet replayed locally at snapshot time. Note that per-cycle full
-re-emission does NOT self-heal this: once t3 lands, u1-granted IS the
-effective state, and every later snapshot faithfully perpetuates it.
+the revoked u1 writable again. The KV node observes the chain; it cannot
+lock it. Only the deferred v2 replayer rule below removes the race entirely.
+The implementation therefore stays deliberately simple: prevent cheaply,
+always detect, remediate manually.
 
-The snapshot itself is taken at a single fixed seq: the snapshotter holds
-the store's read guard across its queries, which blocks the replayer's
-writes for the milliseconds involved, and pins `snapshot_seq` to the replay
-progress read under that same guard. Pausing anything for longer buys
-nothing — the race is in chain ordering, which local pauses cannot touch;
-a paused node is merely blind to competitors, not protected from them.
+> **IMPORTANT — do not change roles while renewal runs.** Role-change
+> operations (grants, revokes, renounces, special-key flips) issued while a
+> renewal cycle is running may be silently overridden by the renewal
+> snapshot. Check `kv_getRenewStatus.aclRenewalInProgress` (or avoid the
+> node's documented cycle time) before issuing role changes. If one lands in
+> the window anyway, the node detects it after replay, logs it at ERROR, and
+> surfaces it in `kv_getRenewStatus` — the admin must then re-issue the
+> change, and overwrite any keys written under a wrongly restored
+> permission. This notice must also appear in the README and
+> `config_example.toml` when the feature ships.
 
-Four guards, layered:
+Under the deployment model the exposure is already small: revokes and
+special-key flips are admin-only and the admin is the operator, so
+following the notice closes the dangerous case outright. Third parties can
+only grant (harmless — the snapshot emits nothing for accounts it did not
+see, so last-op-wins leaves a new grant standing) or renounce their own
+role (resurrectable, caught by detection).
 
-1. **Caught-up gate** — the renewer snapshots only after local replay
-   progress has reached the chain's latest submission (`numSubmissions` on
-   the flow contract, one RPC). Removes the replay-lag variant.
-2. **Operational lock** — `kv_getRenewStatus` exposes
-   `aclRenewalInProgress`; operators MUST hold role changes while it is
-   true. The ACL batch is emitted first each cycle, so the flag is up for
-   seconds. This is a documented convention, not enforcement: the KV node
-   observes writes, it does not admit them, so it cannot block a third
-   party's on-chain op.
+Two cheap guards narrow the window; both are a few lines:
 
-   There is no push channel to the wallets that can issue role changes, so
-   the lock is surfaced as pull mechanisms, cheapest first:
+1. **Caught-up gate** — snapshot only after local replay progress has
+   reached the chain's latest submission (`numSubmissions` on the flow
+   contract, one RPC). The snapshot itself reads under the store's read
+   guard, which blocks the replayer for the milliseconds involved and pins
+   `snapshot_seq` to the progress read under that same guard.
+2. **Pre-submit re-check** — sync and replay keep running while the batch is
+   built; immediately before the on-chain transaction is sent, re-check
+   whether any ACL op has replayed past `snapshot_seq`. If one has, discard
+   and rebuild. Shrinks the blind window to roughly one block confirmation
+   and avoids paying for a doomed batch.
 
-   - the RPC flag itself, for anything that automates role changes;
-   - an SDK courtesy check (upstream): the SDK's access-control write paths
-     accept an optional KV node URL and wait while the flag is up — the one
-     surface that reaches third-party writers, who can grant roles too;
-   - a predictable cadence: the window opens at cycle start and lasts
-     seconds per stream, so manual changes simply avoid the known minute;
-   - INFO logs at window open and close, for the operator's existing
-     alerting.
+**Detection** is one scan and is provably complete: replay is strictly
+sequential by tx_seq, so once `stream_replay_progress` reaches the batch's
+seq, every op in the window is already in `t_access_control`. Any op found
+with `snapshot_seq < version < batch_seq` on a re-emitted pair is reported
+at ERROR and in `kv_getRenewStatus`, with the affected accounts and keys.
+No automatic correction is attempted — a corrective write would have its
+own window and its own race, and (there being no `REVOKE_ADMIN_ROLE` op) a
+resurrected admin renounce could not be corrected by the node at all.
+Remediation is the admin's: re-issue the overridden change (the newest op
+wins), and overwrite any keys written under a wrongly restored permission.
+Writes admitted during the interval are permanent otherwise — replay
+validates at the writing tx's seq and never retroacts.
 
-   An on-chain sentinel key was considered and rejected: it is the only
-   surface visible beyond this node without SDK cooperation, but it costs a
-   transaction per cycle, propagates with the same delay it tries to guard,
-   and its end-marker has the same race. The lock is a courtesy layer that
-   makes corrective churn rare; guards 3 and 4 provide the correctness.
-3. **Pre-submit re-check** — sync and replay keep running while the batch is
-   built and encrypted; immediately before the on-chain transaction is sent,
-   the renewer re-checks whether any ACL op has replayed past
-   `snapshot_seq`. If one has, the batch is discarded and rebuilt from a
-   fresh snapshot. One local query, and it shrinks the blind window from the
-   whole build-and-upload span to roughly one block confirmation.
-4. **Post-replay conflict check** — after the ACL batch replays, scan
-   `t_access_control` for ops with `snapshot_seq < version < batch_seq`
-   touching any (account, role) pair the batch re-emitted. Any hit means a
-   role change landed inside the window and was overridden: re-assert it in
-   a corrective batch and log at ERROR. This is the safety net that needs
-   nobody's cooperation, and it is mandatory — without it a resurrected
-   grant persists silently forever.
+One blind spot remains: an ACL op in the window whose file this node cannot
+download is invisible to the scan. That is the system's pre-existing
+data-availability divergence, not something renewal introduces.
 
-#### What the guards do and do not guarantee
-
-Detection is complete: replay is strictly sequential by tx_seq, so once
-`stream_replay_progress` reaches the batch's seq, every op in the window is
-already in `t_access_control` — the scan cannot be raced by a late arrival.
-
-Under the deployment model (signer = admin), the lock covers the dangerous
-case outright: revokes and special-key flips are admin-only ops, and the
-admin's tooling honors its own node's flag. Third parties can still act in
-the window, but only in two ways:
-
-- **Grants** (`GRANT_WRITER_ROLE` validates for any existing writer) —
-  harmless: the snapshot emits nothing for an account it did not see, so
-  last-op-wins leaves the new grant standing.
-- **Renounces** of their own roles — resurrectable: the re-emitted grant
-  outranks the renounce. The corrective batch re-asserts a writer renounce
-  as an admin revoke, which has the same effect. An admin renounce cannot be
-  re-asserted at all — there is no `REVOKE_ADMIN_ROLE` op, so admin-ship is
-  only ever given up voluntarily — which is why a single-admin stream is the
-  recommended deployment: with no co-admin grants to re-emit, the case
-  cannot arise. On a multi-admin stream it is detected and logged at ERROR,
-  and only the resurrected admin can renounce again.
-
-Three residual risks remain, in decreasing severity:
-
-1. **Writes made during the wrong-permission interval stay valid forever.**
-   A write by a wrongly re-granted account at seq W, with
-   `batch_seq < W < corrective_seq`, is validated at W — where the
-   resurrected grant is the latest op — and commits on every node, including
-   future fresh resyncs. Correction does not retroact. The conflict check
-   therefore also flags any writes by re-asserted accounts inside the
-   interval; remediation is the operator overwriting those keys.
-2. **The corrective batch races itself.** It is an ACL write with its own
-   window. Correction is a loop — re-gate, re-snapshot the affected pairs,
-   emit, re-check — that terminates when a window is clean. ACL churn is
-   rare, so this converges immediately in practice; continuous concurrent
-   churn is a livelock, not corruption.
-3. **An undownloadable file in the window is invisible** to the scan. This is
-   the system's pre-existing data-availability divergence, not something
-   renewal introduces, but it does pierce the check.
-
-The only complete fix is protocol-level and deferred to v2: the renewal file
+The complete fix is protocol-level and deferred to v2: the renewal file
 declares its snapshot seq, and the replayer rejects the file's ACL portion
-whenever any ACL op exists between the declared seq and the file's seq — the
-same optimistic-concurrency pattern `VersionConfliction` already applies to
-values, extended to permissions. It is deterministic across nodes, but it
-changes replay semantics, so it requires every KV node monitoring the stream
-to upgrade in step.
-
-Worst case with the v1 guards: a permission wrongly live for the interval
-between the renewal batch replaying and the corrective batch replaying, with
-any writes it admitted flagged at ERROR for manual remediation. Without the
-guards: silent and permanent until an admin happens to re-issue the revoke.
+whenever any ACL op exists between the declared seq and the file's seq —
+the same optimistic-concurrency pattern `VersionConfliction` already
+applies to values, extended to permissions. It is deterministic across
+nodes, but it changes replay semantics, so it requires every KV node
+monitoring the stream to upgrade in step.
 
 ### 6. Renewal tracking
 
@@ -436,8 +389,9 @@ precedence over the config file when both are set.
 
 - `kv_getRenewStatus` — last cycle start and end, keys scanned, renewed,
   skipped by permission, skipped for missing data, bytes uploaded, the list
-  of keys stuck past `renew_max_attempts`, and `aclRenewalInProgress` (the
-  operational-lock flag from section 5).
+  of keys stuck past `renew_max_attempts`, `aclRenewalInProgress` (the
+  flag from section 5), and any detected ACL conflicts awaiting manual
+  remediation.
 - `admin_renewNow` — triggers a cycle immediately, behind the same EIP-712
   domain as `admin_addStream` but with its own message shape:
   `{ purpose: "renew-now", wallet, issuedAt }`, where `issuedAt` must be
@@ -460,6 +414,7 @@ and handed to both — the same pattern `stream_set` already uses.
 | Signer balance too low | Abort the cycle with an ERROR log; retry next cycle |
 | Chain probe or backfill fails | Warn; defer NULL-timestamp rows and retry the backfill next cycle |
 | Replay does not catch up within the verify timeout | Warn; verification deferred to the next cycle |
+| ACL op landed inside the renewal window | Detect post-replay; ERROR log and `kv_getRenewStatus` report; admin re-issues the change manually |
 
 ## Testing
 
@@ -477,12 +432,9 @@ Unit:
   a stream with no access-control history.
 - The pre-submit re-check: an ACL op replayed after snapshot_seq aborts the
   built batch; a clean window submits.
-- The post-replay conflict check: an op landing between snapshot_seq and
-  batch_seq on a re-emitted pair is detected and re-asserted; ops outside
-  the window or on untouched pairs are not. Writes admitted during the
-  wrong-permission interval are flagged. A resurrected writer renounce is
-  re-asserted as an admin revoke; a resurrected admin renounce is logged,
-  not corrected.
+- Conflict detection: an op landing between snapshot_seq and batch_seq on a
+  re-emitted pair is reported; ops outside the window or on untouched pairs
+  are not. No corrective write is emitted.
 - Permission skip and backoff behaviour.
 
 Migration:
@@ -511,9 +463,6 @@ to emit access-control ops the SDK cannot currently express:
   remaining revoke and renounce variants round the API out.
 - `StreamDataBuilder::set` contains a `println!("key hex: ...")` that would
   print one line per renewed key.
-- The SDK's access-control write paths gain an optional KV node URL and, when
-  configured, wait on `kv_getRenewStatus.aclRenewalInProgress` before
-  submitting (the operational-lock courtesy check from section 5).
 
 `node/stream/Cargo.toml` then moves to the new rev.
 
