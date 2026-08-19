@@ -299,10 +299,46 @@ Three guards, layered:
    nobody's cooperation, and it is mandatory — without it a resurrected
    grant persists silently forever.
 
-Worst case with all three: a permission wrongly restored for the minutes
-between the renewal batch replaying and the corrective batch replaying,
-loudly logged. Without them: silent and permanent until an admin happens to
-re-issue the revoke.
+#### What the guards do and do not guarantee
+
+Detection is complete: replay is strictly sequential by tx_seq, so once
+`stream_replay_progress` reaches the batch's seq, every op in the window is
+already in `t_access_control` — the scan cannot be raced by a late arrival.
+And when all role changes flow through the operator's own tooling, the lock
+closes the race entirely. Note, however, that `GRANT_WRITER_ROLE` validates
+for any stream writer, not only admins, so multi-writer streams can have
+third-party ACL churn the lock cannot see.
+
+Three residual risks remain, in decreasing severity:
+
+1. **Writes made during the wrong-permission interval stay valid forever.**
+   A write by a wrongly re-granted account at seq W, with
+   `batch_seq < W < corrective_seq`, is validated at W — where the
+   resurrected grant is the latest op — and commits on every node, including
+   future fresh resyncs. Correction does not retroact. The conflict check
+   therefore also flags any writes by re-asserted accounts inside the
+   interval; remediation is the operator overwriting those keys.
+2. **The corrective batch races itself.** It is an ACL write with its own
+   window. Correction is a loop — re-gate, re-snapshot the affected pairs,
+   emit, re-check — that terminates when a window is clean. ACL churn is
+   rare, so this converges immediately in practice; continuous concurrent
+   churn is a livelock, not corruption.
+3. **An undownloadable file in the window is invisible** to the scan. This is
+   the system's pre-existing data-availability divergence, not something
+   renewal introduces, but it does pierce the check.
+
+The only complete fix is protocol-level and deferred to v2: the renewal file
+declares its snapshot seq, and the replayer rejects the file's ACL portion
+whenever any ACL op exists between the declared seq and the file's seq — the
+same optimistic-concurrency pattern `VersionConfliction` already applies to
+values, extended to permissions. It is deterministic across nodes, but it
+changes replay semantics, so it requires every KV node monitoring the stream
+to upgrade in step.
+
+Worst case with the v1 guards: a permission wrongly live for the minutes
+between the renewal batch replaying and the corrective batch replaying, with
+any writes it admitted flagged at ERROR for manual remediation. Without the
+guards: silent and permanent until an admin happens to re-issue the revoke.
 
 ### 6. Renewal tracking
 
@@ -394,7 +430,8 @@ Unit:
   a stream with no access-control history.
 - The post-replay conflict check: an op landing between snapshot_seq and
   batch_seq on a re-emitted pair is detected and re-asserted; ops outside
-  the window or on untouched pairs are not.
+  the window or on untouched pairs are not. Writes admitted during the
+  wrong-permission interval are flagged.
 - Permission skip and backoff behaviour.
 
 Migration:
@@ -441,6 +478,8 @@ to emit access-control ops the SDK cannot currently express:
 - Renewing historical versions of a key. Only the latest value is preserved;
   older versions remain readable only while their original files live.
 - Any on-chain lifetime-extension mechanism, which does not exist.
+- The protocol-level ACL optimistic-concurrency rule (section 5), which
+  requires a coordinated replayer upgrade across all KV nodes.
 - Coordination between multiple renewing nodes.
 
 ## Delivery
