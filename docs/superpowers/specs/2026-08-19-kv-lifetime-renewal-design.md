@@ -298,6 +298,24 @@ Four guards, layered:
    seconds. This is a documented convention, not enforcement: the KV node
    observes writes, it does not admit them, so it cannot block a third
    party's on-chain op.
+
+   There is no push channel to the wallets that can issue role changes, so
+   the lock is surfaced as pull mechanisms, cheapest first:
+
+   - the RPC flag itself, for anything that automates role changes;
+   - an SDK courtesy check (upstream): the SDK's access-control write paths
+     accept an optional KV node URL and wait while the flag is up — the one
+     surface that reaches third-party writers, who can grant roles too;
+   - a predictable cadence: the window opens at cycle start and lasts
+     seconds per stream, so manual changes simply avoid the known minute;
+   - INFO logs at window open and close, for the operator's existing
+     alerting.
+
+   An on-chain sentinel key was considered and rejected: it is the only
+   surface visible beyond this node without SDK cooperation, but it costs a
+   transaction per cycle, propagates with the same delay it tries to guard,
+   and its end-marker has the same race. The lock is a courtesy layer that
+   makes corrective churn rare; guards 3 and 4 provide the correctness.
 3. **Pre-submit re-check** — sync and replay keep running while the batch is
    built and encrypted; immediately before the on-chain transaction is sent,
    the renewer re-checks whether any ACL op has replayed past
@@ -475,6 +493,9 @@ to emit access-control ops the SDK cannot currently express:
   remaining revoke and renounce variants round the API out.
 - `StreamDataBuilder::set` contains a `println!("key hex: ...")` that would
   print one line per renewed key.
+- The SDK's access-control write paths gain an optional KV node URL and, when
+  configured, wait on `kv_getRenewStatus.aclRenewalInProgress` before
+  submitting (the operational-lock courtesy check from section 5).
 
 `node/stream/Cargo.toml` then moves to the new rev.
 
