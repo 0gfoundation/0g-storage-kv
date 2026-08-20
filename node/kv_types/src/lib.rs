@@ -146,3 +146,24 @@ pub struct RenewAttempt {
     pub last_tx_hash: Option<H256>,
     pub last_error: Option<String>,
 }
+
+/// A stream's effective access-control state as of some version: the
+/// groupwise-latest winner per (account) for admins/writers and per
+/// (key)/(key, account) for special keys/special writers. See spec §5.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EffectiveAcl {
+    pub admins: Vec<H160>,
+    pub writers: Vec<H160>,
+    pub special_keys: Vec<Vec<u8>>,
+    pub special_writers: Vec<(Vec<u8>, H160)>,
+}
+
+/// A single `t_access_control` row surfaced by
+/// `get_access_control_ops_in_range`, in replay order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclOpRow {
+    pub op_type: u8,
+    pub key: Vec<u8>,
+    pub account: H160,
+    pub version: u64,
+}

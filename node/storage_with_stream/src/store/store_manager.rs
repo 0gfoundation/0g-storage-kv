@@ -2,7 +2,8 @@ use anyhow::{Error, Result};
 use async_trait::async_trait;
 use ethereum_types::{H160, H256};
 use kv_types::{
-    AccessControlSet, KVTransaction, KeyValuePair, RenewAttempt, StaleKey, StreamWriteSet,
+    AccessControlSet, AclOpRow, EffectiveAcl, KVTransaction, KeyValuePair, RenewAttempt, StaleKey,
+    StreamWriteSet,
 };
 use shared_types::{ChunkArray, FlowProof};
 use std::path::Path;
@@ -276,6 +277,29 @@ impl StreamRead for StoreManager {
 
     async fn get_null_time_versions(&self, limit: u64) -> Result<Vec<u64>> {
         self.stream_store.get_null_time_versions(limit).await
+    }
+
+    async fn get_effective_access_control(&self, stream_id: H256) -> Result<EffectiveAcl> {
+        self.stream_store
+            .get_effective_access_control(stream_id)
+            .await
+    }
+
+    async fn get_latest_access_control_seq(&self, stream_id: H256) -> Result<u64> {
+        self.stream_store
+            .get_latest_access_control_seq(stream_id)
+            .await
+    }
+
+    async fn get_access_control_ops_in_range(
+        &self,
+        stream_id: H256,
+        after: u64,
+        before: u64,
+    ) -> Result<Vec<AclOpRow>> {
+        self.stream_store
+            .get_access_control_ops_in_range(stream_id, after, before)
+            .await
     }
 }
 

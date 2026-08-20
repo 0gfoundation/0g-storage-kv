@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 use ethereum_types::{H160, H256};
-use kv_types::{AccessControlSet, KeyValuePair, RenewAttempt, StaleKey, StreamWriteSet};
+use kv_types::{
+    AccessControlSet, AclOpRow, EffectiveAcl, KeyValuePair, RenewAttempt, StaleKey, StreamWriteSet,
+};
 use ssz::{Decode, Encode};
 use std::{path::Path, sync::Arc};
 
@@ -447,6 +449,155 @@ impl StreamStore {
         } else {
             self.is_writer_of_stream(account, stream_id, version).await
         }
+    }
+
+    /// The stream's current effective ACL: the groupwise-latest grant/revoke
+    /// winner per admin account, writer account, special key, and special
+    /// (key, account) writer pair. See spec §5.
+    pub async fn get_effective_access_control(&self, stream_id: H256) -> Result<EffectiveAcl> {
+        self.connection
+            .call(move |conn| {
+                let stream_id_bytes = stream_id.as_ssz_bytes();
+
+                let mut admins = Vec::new();
+                {
+                    let mut stmt =
+                        conn.prepare(SqliteDBStatements::GET_EFFECTIVE_ADMINS_STATEMENT)?;
+                    let rows =
+                        stmt.query_map(named_params! { ":stream_id": stream_id_bytes }, |row| {
+                            let account: Vec<u8> = row.get(0)?;
+                            let op_type: u8 = row.get(1)?;
+                            Ok((account, op_type))
+                        })?;
+                    for row in rows {
+                        let (account, op_type) = row?;
+                        if op_type == AccessControlOps::GRANT_ADMIN_ROLE {
+                            admins.push(H160::from_slice(&account));
+                        }
+                    }
+                }
+
+                let mut writers = Vec::new();
+                {
+                    let mut stmt =
+                        conn.prepare(SqliteDBStatements::GET_EFFECTIVE_WRITERS_STATEMENT)?;
+                    let rows =
+                        stmt.query_map(named_params! { ":stream_id": stream_id_bytes }, |row| {
+                            let account: Vec<u8> = row.get(0)?;
+                            let op_type: u8 = row.get(1)?;
+                            Ok((account, op_type))
+                        })?;
+                    for row in rows {
+                        let (account, op_type) = row?;
+                        if op_type == AccessControlOps::GRANT_WRITER_ROLE {
+                            writers.push(H160::from_slice(&account));
+                        }
+                    }
+                }
+
+                let mut special_keys = Vec::new();
+                {
+                    let mut stmt =
+                        conn.prepare(SqliteDBStatements::GET_EFFECTIVE_SPECIAL_KEYS_STATEMENT)?;
+                    let rows =
+                        stmt.query_map(named_params! { ":stream_id": stream_id_bytes }, |row| {
+                            let key: Vec<u8> = row.get(0)?;
+                            let op_type: u8 = row.get(1)?;
+                            Ok((key, op_type))
+                        })?;
+                    for row in rows {
+                        let (key, op_type) = row?;
+                        if op_type == AccessControlOps::SET_KEY_TO_SPECIAL {
+                            special_keys.push(key);
+                        }
+                    }
+                }
+
+                let mut special_writers = Vec::new();
+                {
+                    let mut stmt =
+                        conn.prepare(SqliteDBStatements::GET_EFFECTIVE_SPECIAL_WRITERS_STATEMENT)?;
+                    let rows =
+                        stmt.query_map(named_params! { ":stream_id": stream_id_bytes }, |row| {
+                            let key: Vec<u8> = row.get(0)?;
+                            let account: Vec<u8> = row.get(1)?;
+                            let op_type: u8 = row.get(2)?;
+                            Ok((key, account, op_type))
+                        })?;
+                    for row in rows {
+                        let (key, account, op_type) = row?;
+                        if op_type == AccessControlOps::GRANT_SPECIAL_WRITER_ROLE {
+                            special_writers.push((key, H160::from_slice(&account)));
+                        }
+                    }
+                }
+
+                Ok(EffectiveAcl {
+                    admins,
+                    writers,
+                    special_keys,
+                    special_writers,
+                })
+            })
+            .await
+    }
+
+    /// Highest `t_access_control` version recorded for the stream, or 0 when
+    /// the stream has no access-control rows yet.
+    pub async fn get_latest_access_control_seq(&self, stream_id: H256) -> Result<u64> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt =
+                    conn.prepare(SqliteDBStatements::GET_LATEST_ACCESS_CONTROL_SEQ_STATEMENT)?;
+                let mut rows = stmt.query_map(
+                    named_params! { ":stream_id": stream_id.as_ssz_bytes() },
+                    |row| row.get::<_, Option<i64>>(0),
+                )?;
+                if let Some(raw_data) = rows.next() {
+                    return Ok(raw_data?.map(convert_to_u64).unwrap_or(0));
+                }
+                Ok(0)
+            })
+            .await
+    }
+
+    /// Access-control ops recorded with `after < version < before`, ascending
+    /// (replay order) — both bounds exclusive.
+    pub async fn get_access_control_ops_in_range(
+        &self,
+        stream_id: H256,
+        after: u64,
+        before: u64,
+    ) -> Result<Vec<AclOpRow>> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt =
+                    conn.prepare(SqliteDBStatements::GET_ACCESS_CONTROL_OPS_IN_RANGE_STATEMENT)?;
+                let rows = stmt.query_map(
+                    named_params! {
+                        ":stream_id": stream_id.as_ssz_bytes(),
+                        ":after": convert_to_i64(after),
+                        ":before": convert_to_i64(before),
+                    },
+                    |row| {
+                        let op_type: u8 = row.get(0)?;
+                        let key: Option<Vec<u8>> = row.get(1)?;
+                        let account: Option<Vec<u8>> = row.get(2)?;
+                        let version: i64 = row.get(3)?;
+                        Ok(AclOpRow {
+                            op_type,
+                            key: key.unwrap_or_default(),
+                            account: account
+                                .map(|b| H160::from_slice(&b))
+                                .unwrap_or_else(H160::zero),
+                            version: convert_to_u64(version),
+                        })
+                    },
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(Into::into)
+            })
+            .await
     }
 
     pub async fn put_stream(
@@ -1191,6 +1342,94 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    fn acl_set(
+        ops: Vec<(u8, H160, Vec<u8>)>,
+        stream_id: H256,
+    ) -> (StreamWriteSet, AccessControlSet) {
+        (
+            StreamWriteSet {
+                stream_writes: vec![],
+            },
+            AccessControlSet {
+                access_controls: ops
+                    .into_iter()
+                    .map(|(op_type, account, key)| kv_types::AccessControl {
+                        op_type,
+                        stream_id,
+                        key: Arc::new(key),
+                        account,
+                        operator: account,
+                    })
+                    .collect(),
+                is_admin: Default::default(),
+            },
+        )
+    }
+
+    // NOTE: deviates from the task brief's literal seeds (1,2) because
+    // put_stream's replay-progress guard requires a fresh DB's first commit
+    // to be at tx_seq 0; seeds are shifted down by 1 (0,1) with version
+    // assertions adjusted accordingly.
+    #[tokio::test]
+    async fn effective_acl_last_op_wins() {
+        let store = StreamStore::new_in_memory().await.unwrap();
+        store.create_tables_if_not_exist().await.unwrap();
+        let sid = H256::repeat_byte(4);
+        let (u1, u2) = (H160::repeat_byte(1), H160::repeat_byte(2));
+
+        store
+            .put_stream(
+                0,
+                "Commit".into(),
+                Some(acl_set(
+                    vec![
+                        (AccessControlOps::GRANT_ADMIN_ROLE, u1, vec![]),
+                        (AccessControlOps::GRANT_WRITER_ROLE, u2, vec![]),
+                        (
+                            AccessControlOps::SET_KEY_TO_SPECIAL,
+                            H160::zero(),
+                            b"s".to_vec(),
+                        ),
+                        (
+                            AccessControlOps::GRANT_SPECIAL_WRITER_ROLE,
+                            u2,
+                            b"s".to_vec(),
+                        ),
+                    ],
+                    sid,
+                )),
+                Some(100),
+            )
+            .await
+            .unwrap();
+        store
+            .put_stream(
+                1,
+                "Commit".into(),
+                Some(acl_set(
+                    vec![(AccessControlOps::REVOKE_WRITER_ROLE, u2, vec![])],
+                    sid,
+                )),
+                Some(200),
+            )
+            .await
+            .unwrap();
+
+        let acl = store.get_effective_access_control(sid).await.unwrap();
+        assert_eq!(acl.admins, vec![u1]);
+        assert!(acl.writers.is_empty()); // revoked at v1
+        assert_eq!(acl.special_keys, vec![b"s".to_vec()]);
+        assert_eq!(acl.special_writers, vec![(b"s".to_vec(), u2)]);
+
+        assert_eq!(store.get_latest_access_control_seq(sid).await.unwrap(), 1);
+        let win = store
+            .get_access_control_ops_in_range(sid, 0, 2)
+            .await
+            .unwrap();
+        assert_eq!(win.len(), 1);
+        assert_eq!(win[0].op_type, AccessControlOps::REVOKE_WRITER_ROLE);
     }
 
     // NOTE: deviates from the task brief's literal seeds (1,2) because
