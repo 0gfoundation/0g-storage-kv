@@ -24,7 +24,8 @@ pub const COL_ENTRY_BATCH: u32 = 1;
 pub const COL_TX_COMPLETED: u32 = 2;
 pub const COL_MISC: u32 = 3;
 pub const COL_BLOCK_PROGRESS: u32 = 4;
-pub const COL_NUM: u32 = 5;
+pub const COL_TX_TIME: u32 = 5;
+pub const COL_NUM: u32 = 6;
 
 pub struct DataStore {
     flow_store: FlowStore,
@@ -184,5 +185,13 @@ impl DataStore {
         let end_flow_index = index + length;
         self.flow_store
             .get_entries(start_flow_index, end_flow_index)
+    }
+
+    pub fn put_tx_block_time(&self, tx_seq: u64, ts: u64) -> Result<()> {
+        self.tx_store.put_block_time(tx_seq, ts)
+    }
+
+    pub fn get_tx_block_time(&self, tx_seq: u64) -> Result<Option<u64>> {
+        self.tx_store.get_block_time(tx_seq)
     }
 }

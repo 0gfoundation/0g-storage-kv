@@ -68,6 +68,10 @@ impl DataStoreWrite for StoreManager {
         self.data_store
             .put_chunks_with_tx_hash(tx_seq, tx_hash, chunks, maybe_file_proof)
     }
+
+    fn put_tx_block_time(&self, tx_seq: u64, ts: u64) -> Result<()> {
+        self.data_store.put_tx_block_time(tx_seq, ts)
+    }
 }
 
 impl DataStoreRead for StoreManager {
@@ -101,6 +105,10 @@ impl DataStoreRead for StoreManager {
 
     fn get_chunk_by_flow_index(&self, index: u64, length: u64) -> Result<Option<ChunkArray>> {
         self.data_store.get_chunk_by_flow_index(index, length)
+    }
+
+    fn get_tx_block_time(&self, tx_seq: u64) -> Result<Option<u64>> {
+        self.data_store.get_tx_block_time(tx_seq)
     }
 }
 

@@ -37,6 +37,8 @@ pub trait DataStoreRead {
     fn get_log_latest_block_number(&self) -> Result<Option<u64>>;
 
     fn get_chunk_by_flow_index(&self, index: u64, length: u64) -> Result<Option<ChunkArray>>;
+
+    fn get_tx_block_time(&self, tx_seq: u64) -> Result<Option<u64>>;
 }
 
 pub trait DataStoreWrite {
@@ -61,6 +63,8 @@ pub trait DataStoreWrite {
         chunks: ChunkArray,
         maybe_file_proof: Option<FlowProof>,
     ) -> Result<bool>;
+
+    fn put_tx_block_time(&self, tx_seq: u64, ts: u64) -> Result<()>;
 }
 
 pub trait Store:
