@@ -31,6 +31,32 @@ fn convert_to_u64(x: i64) -> u64 {
     }
 }
 
+fn add_time_columns_if_missing(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<()> {
+    let (mut has_created, mut has_updated) = (false, false);
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        match row.get::<_, String>(1)?.as_str() {
+            "created_at" => has_created = true,
+            "updated_at" => has_updated = true,
+            _ => {}
+        }
+    }
+    if !has_created {
+        conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN created_at INTEGER", table),
+            [],
+        )?;
+    }
+    if !has_updated {
+        conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN updated_at INTEGER", table),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 impl StreamStore {
     pub async fn create_tables_if_not_exist(&self) -> Result<()> {
         self.connection
@@ -46,6 +72,7 @@ impl StreamStore {
                 }
                 // stream table
                 conn.execute(SqliteDBStatements::CREATE_STREAM_TABLE_STATEMENT, [])?;
+                add_time_columns_if_missing(conn, "t_stream")?;
                 for stmt in SqliteDBStatements::CREATE_STREAM_INDEX_STATEMENTS.iter() {
                     conn.execute(stmt, [])?;
                 }
@@ -54,6 +81,7 @@ impl StreamStore {
                     SqliteDBStatements::CREATE_ACCESS_CONTROL_TABLE_STATEMENT,
                     [],
                 )?;
+                add_time_columns_if_missing(conn, "t_access_control")?;
                 for stmt in SqliteDBStatements::CREATE_ACCESS_CONTROL_INDEX_STATEMENTS.iter() {
                     conn.execute(stmt, [])?;
                 }
