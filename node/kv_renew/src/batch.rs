@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use ethereum_types::H256;
+use std::collections::HashSet;
 use std::sync::Arc;
 use zg_storage_client::core::dataflow::IterableData;
 use zg_storage_client::core::encrypted_data::EncryptedData;
@@ -19,6 +20,7 @@ pub struct ValueBatcher {
     max_keys: usize,
     bytes: usize,
     keys: Vec<(H256, Vec<u8>)>,
+    seen: HashSet<(H256, Vec<u8>)>,
 }
 
 /// Result of [`ValueBatcher::finish`]: the encoded stream-data payload ready
@@ -39,6 +41,7 @@ impl ValueBatcher {
             max_keys,
             bytes: 0,
             keys: Vec::new(),
+            seen: HashSet::new(),
         }
     }
 
@@ -46,9 +49,22 @@ impl ValueBatcher {
         self.keys.is_empty()
     }
 
-    /// false = batch full, item NOT added (caller finishes batch and re-pushes).
+    /// `false` = batch full, item NOT added (caller finishes batch and re-pushes).
     /// An oversized value is accepted when the batch is empty (its own batch).
+    ///
+    /// A repeated `(stream_id, key)` within the same batch is dropped:
+    /// `push` returns `true` without touching `builder`/`bytes`/`keys`. The
+    /// scanner feeds only the latest version per key, so a duplicate push
+    /// carries the same value — dropping it keeps the bytes/keys bookkeeping
+    /// accurate without attempting newest-wins overwrite. Returning `false`
+    /// here would be wrong: `false` means "batch full, retry in a new
+    /// batch," and retrying a duplicate would loop forever since it can
+    /// never fit even an empty batch.
     pub fn push(&mut self, stream_id: H256, key: Vec<u8>, value: Vec<u8>) -> bool {
+        let dup = (stream_id, key.clone());
+        if self.seen.contains(&dup) {
+            return true;
+        }
         let empty = self.is_empty();
         let full = (!empty && self.bytes + value.len() > self.max_bytes)
             || self.keys.len() >= self.max_keys;
@@ -56,8 +72,9 @@ impl ValueBatcher {
             return false;
         }
         self.bytes += value.len();
-        self.keys.push((stream_id, key.clone()));
         self.builder.set(stream_id, &key, value);
+        self.seen.insert(dup);
+        self.keys.push((stream_id, key));
         true
     }
 
@@ -132,8 +149,25 @@ mod tests {
         assert!(!built.encoded.is_empty());
         assert_eq!(built.tags.len(), 64); // STREAM_DOMAIN + one stream id
         assert_eq!(built.keys, vec![(sid, b"k".to_vec())]);
-        // declared version is u64::MAX (first 8 bytes of encoding)
+        assert_eq!(built.bytes, 1); // len(b"v")
+                                    // declared version is u64::MAX (first 8 bytes of encoding)
         assert_eq!(&built.encoded[..8], &u64::MAX.to_be_bytes());
+    }
+
+    #[test]
+    fn duplicate_key_push_is_dropped() {
+        let sid = H256::repeat_byte(1);
+        let mut b = ValueBatcher::new(1 << 20, 10);
+        assert!(b.push(sid, b"k".to_vec(), b"v".to_vec()));
+        // Same (stream_id, key) pushed again: dropped, not double-counted.
+        assert!(b.push(sid, b"k".to_vec(), b"v".to_vec()));
+        let built = b.finish().unwrap();
+        assert_eq!(built.keys, vec![(sid, b"k".to_vec())]);
+        assert_eq!(built.bytes, 1); // counted once, not twice
+                                    // version (8 bytes) + reads count (4 bytes, 0 reads) + writes count
+                                    // (4 bytes) must show exactly one write, not two.
+        assert_eq!(&built.encoded[8..12], &0u32.to_be_bytes());
+        assert_eq!(&built.encoded[12..16], &1u32.to_be_bytes());
     }
 
     #[test]
