@@ -14,10 +14,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use ethereum_types::{H160, H256};
+use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{LocalWallet, Signer};
+use ethers::types::Address;
 use storage_with_stream::Store;
-use tokio::sync::RwLock;
+use task_executor::TaskExecutor;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::Instant;
+
+use crate::cycle::{drain_stream, verify_renewed, CycleDeps};
+use crate::probe::build_clock;
+use crate::upload::{BatchSink, RenewUploader};
+use crate::{RenewConfig, SharedRenewStatus, StuckKey};
+
+/// How often `wait_for_renewals` re-checks replay progress while waiting for
+/// a batch's keys to show a newer version.
+const REPLAY_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Page size for the backfill pass's `get_null_time_versions` loop.
+const BACKFILL_PAGE: u64 = 1024;
 
 /// Current unix time in seconds. Never panics on a clock that reports
 /// before the epoch (defaults to 0 instead).
@@ -98,6 +113,374 @@ pub async fn wait_for_renewals(
         }
         tokio::time::sleep(poll).await;
     }
+}
+
+/// Runs one renewal cycle over `streams`: drain each stream's stale keys,
+/// wait (bounded) for the renewal to replay, then verify+record the
+/// outcome. A single stream's failure is caught and logged here -- it never
+/// stops the rest of the cycle.
+///
+/// `acl_disabled` is the startup-computed set of streams where the renew
+/// signer isn't admin (see `run`'s startup check). Task 19's ACL-renewal
+/// hook will consult it before draining a stream; it's threaded through
+/// unused for now so that hook has a single place to land.
+pub async fn run_cycle(deps: &CycleDeps, streams: &[H256], _acl_disabled: &HashSet<H256>) {
+    let now = unix_now();
+    let cutoff = now.saturating_sub(deps.config.max_age_secs);
+
+    for &stream_id in streams {
+        let (keys, pre_seq) = match drain_stream(deps, stream_id, cutoff, now).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!(
+                    "renew: drain_stream failed for stream {:?}: {}",
+                    stream_id, e
+                );
+                continue;
+            }
+        };
+
+        if keys.is_empty() {
+            // Nothing uploaded this pass (nothing stale, or dry-run) --
+            // nothing to wait for or verify.
+            continue;
+        }
+
+        wait_for_renewals(
+            &deps.store,
+            &keys,
+            pre_seq,
+            Duration::from_secs(deps.config.cycle_interval_secs.max(1)),
+            REPLAY_POLL_INTERVAL,
+        )
+        .await;
+
+        match verify_renewed(&deps.store, &keys, pre_seq, unix_now()).await {
+            Ok(renewed) => deps.status.write().await.keys_renewed += renewed,
+            Err(e) => error!(
+                "renew: verify_renewed failed for stream {:?}: {}",
+                stream_id, e
+            ),
+        }
+    }
+}
+
+/// One-time backfill of NULL-timestamped rows (spec §3), run once at
+/// startup (after the startup delay) when any such rows exist. Any probe
+/// failure -- bad RPC endpoint, unparsable contract address, a chain-probe
+/// error -- is non-fatal: it's logged and backfill is skipped entirely for
+/// this run; NULL rows simply stay deferred, exactly as spec §3 allows.
+async fn run_backfill(store: &Arc<RwLock<dyn Store>>, config: &RenewConfig) {
+    let has_null_rows = match store.read().await.get_null_time_versions(1).await {
+        Ok(versions) => !versions.is_empty(),
+        Err(e) => {
+            warn!(
+                "renew: backfill: get_null_time_versions probe failed: {} -- skipping backfill",
+                e
+            );
+            return;
+        }
+    };
+    if !has_null_rows {
+        return;
+    }
+
+    let provider = match Provider::<Http>::try_from(&config.blockchain_rpc_endpoint) {
+        Ok(p) => Arc::new(p),
+        Err(e) => {
+            warn!(
+                "renew: backfill: failed to build provider for {:?}: {} -- skipping backfill",
+                config.blockchain_rpc_endpoint, e
+            );
+            return;
+        }
+    };
+    let flow_addr = match config.log_contract_address.parse::<Address>() {
+        Ok(a) => a,
+        Err(e) => {
+            warn!(
+                "renew: backfill: failed to parse log_contract_address {:?}: {} -- skipping backfill",
+                config.log_contract_address, e
+            );
+            return;
+        }
+    };
+
+    let next_tx_seq = store.read().await.next_tx_seq();
+    let now = unix_now();
+    let age_points = [config.max_age_secs, config.max_age_secs * 2];
+    let clock = match build_clock(provider, flow_addr, &age_points, next_tx_seq, now).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                "renew: backfill: build_clock failed: {} -- skipping backfill",
+                e
+            );
+            return;
+        }
+    };
+
+    // Loop guard: if a batch's first version is identical to the previous
+    // batch's first version, `backfill_version_time` isn't actually making
+    // progress (persistent write failure or similar) -- stop rather than
+    // spin forever re-fetching the same page.
+    let mut last_first_version: Option<u64> = None;
+    loop {
+        let versions = match store
+            .read()
+            .await
+            .get_null_time_versions(BACKFILL_PAGE)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "renew: backfill: get_null_time_versions failed: {} -- stopping backfill",
+                    e
+                );
+                return;
+            }
+        };
+        let Some(&first_version) = versions.first() else {
+            break;
+        };
+        if last_first_version == Some(first_version) {
+            warn!(
+                "renew: backfill: batch did not shrink past version {} -- stopping to avoid an infinite loop",
+                first_version
+            );
+            return;
+        }
+        last_first_version = Some(first_version);
+
+        for version in versions {
+            let ts = clock.time_at(version);
+            if let Err(e) = store.write().await.backfill_version_time(version, ts).await {
+                warn!(
+                    "renew: backfill: backfill_version_time({}) failed: {} -- stopping backfill",
+                    version, e
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Constructs the balance-check provider, checks the signer's balance,
+/// constructs a fresh uploader (panic-contained), selects this cycle's
+/// streams, and runs `run_cycle`. Every failure short-circuits to "skip this
+/// cycle" rather than propagating -- the caller (`run`'s main loop) always
+/// proceeds to the end-of-cycle status update regardless.
+async fn run_one_cycle(
+    store: &Arc<RwLock<dyn Store>>,
+    live_stream_set: &Arc<RwLock<HashSet<H256>>>,
+    config: &Arc<RenewConfig>,
+    status: &SharedRenewStatus,
+    signer: H160,
+    acl_disabled: &HashSet<H256>,
+) {
+    let provider = match Provider::<Http>::try_from(&config.blockchain_rpc_endpoint) {
+        Ok(p) => p,
+        Err(e) => {
+            error!(
+                "renew: failed to build provider for balance check: {} -- skipping cycle",
+                e
+            );
+            return;
+        }
+    };
+    let balance = match provider.get_balance(signer, None).await {
+        Ok(b) => b,
+        Err(e) => {
+            error!("renew: get_balance failed: {} -- skipping cycle", e);
+            return;
+        }
+    };
+    if balance.is_zero() {
+        error!(
+            "renew: signer {:?} has zero balance -- skipping cycle",
+            signer
+        );
+        return;
+    }
+
+    // Constructed fresh each cycle (never at service start, since the
+    // endpoint may be down at boot) and inside `tokio::spawn` so that a
+    // `must_new_*`-style panic from the SDK's connectivity helpers is
+    // contained to this cycle instead of killing the whole "kv renewer"
+    // task.
+    let cfg_for_uploader = config.clone();
+    let sink: Arc<dyn BatchSink> =
+        match tokio::spawn(async move { RenewUploader::new(&cfg_for_uploader).await }).await {
+            Ok(Ok(uploader)) => Arc::new(uploader),
+            Ok(Err(e)) => {
+                error!("renew: RenewUploader::new failed: {} -- skipping cycle", e);
+                return;
+            }
+            Err(join_err) => {
+                error!(
+                    "renew: RenewUploader::new panicked: {} -- skipping cycle",
+                    join_err
+                );
+                return;
+            }
+        };
+
+    let live = live_stream_set.read().await.clone();
+    let streams = select_streams(&live, &config.stream_ids);
+
+    let deps = CycleDeps {
+        store: store.clone(),
+        sink,
+        config: config.clone(),
+        status: status.clone(),
+        signer,
+    };
+
+    run_cycle(&deps, &streams, acl_disabled).await;
+}
+
+/// The renewal service loop, run as the body of the "kv renewer" task
+/// spawned by `spawn_renewer`.
+async fn run(
+    store: Arc<RwLock<dyn Store>>,
+    live_stream_set: Arc<RwLock<HashSet<H256>>>,
+    config: RenewConfig,
+    status: SharedRenewStatus,
+    mut trigger_rx: mpsc::UnboundedReceiver<()>,
+) {
+    let signer = match signer_address(&config.private_key) {
+        Ok(addr) => {
+            info!("renew: signer address {:?}", addr);
+            addr
+        }
+        Err(e) => {
+            error!(
+                "renew: failed to derive signer address from configured private key: {} -- renewal service disabled",
+                e
+            );
+            return;
+        }
+    };
+
+    let config = Arc::new(config);
+
+    tokio::time::sleep(Duration::from_secs(config.startup_delay_secs)).await;
+
+    // Startup admin check: streams where the renew signer isn't an admin
+    // get recorded here so Task 19's ACL-renewal hook can skip/handle them
+    // specially. Draining a stream's stale keys doesn't itself require
+    // admin (only ACL-op renewal does), so this doesn't stop those streams
+    // from being drained below.
+    let mut acl_disabled: HashSet<H256> = HashSet::new();
+    {
+        let snapshot: HashSet<H256> = live_stream_set.read().await.clone();
+        // Re-acquire the store's read lock per stream rather than holding
+        // one guard across every `is_admin` await in the loop -- keeps this
+        // startup scan from blocking a concurrent writer (e.g. an
+        // `admin_addStream` RPC call) for the whole pass.
+        for stream_id in &snapshot {
+            match store
+                .read()
+                .await
+                .is_admin(signer, *stream_id, u64::MAX)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    error!(
+                        "ACL renewal disabled for stream {:?}: renew signer is not admin",
+                        stream_id
+                    );
+                    acl_disabled.insert(*stream_id);
+                }
+                Err(e) => {
+                    error!(
+                        "renew: startup is_admin check failed for stream {:?}: {}",
+                        stream_id, e
+                    );
+                }
+            }
+        }
+    }
+
+    run_backfill(&store, &config).await;
+
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(config.cycle_interval_secs)) => {}
+            Some(_) = trigger_rx.recv() => {}
+        }
+
+        let should_run = {
+            let mut s = status.write().await;
+            if s.cycle_running {
+                false
+            } else {
+                s.cycle_running = true;
+                s.dry_run = config.dry_run;
+                s.last_cycle_start = Some(unix_now());
+                true
+            }
+        };
+        if !should_run {
+            info!("renew: cycle trigger skipped -- previous cycle is still running");
+            continue;
+        }
+
+        run_one_cycle(
+            &store,
+            &live_stream_set,
+            &config,
+            &status,
+            signer,
+            &acl_disabled,
+        )
+        .await;
+
+        let stuck_keys = match store
+            .read()
+            .await
+            .list_stuck_renewals(config.max_attempts, 100)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(stream_id, key, attempt)| StuckKey {
+                    stream_id,
+                    key: format!("0x{}", hex::encode(key)),
+                    attempts: attempt.attempts,
+                    last_error: attempt.last_error,
+                })
+                .collect(),
+            Err(e) => {
+                error!("renew: list_stuck_renewals failed: {}", e);
+                Vec::new()
+            }
+        };
+
+        let mut s = status.write().await;
+        s.last_cycle_end = Some(unix_now());
+        s.cycle_running = false;
+        s.stuck_keys = stuck_keys;
+    }
+}
+
+/// Spawns the renewal service loop as task "kv renewer". Never blocks the
+/// caller; every error inside the loop is caught and logged rather than
+/// propagated, so this task runs for the lifetime of the process.
+pub fn spawn_renewer(
+    executor: TaskExecutor,
+    store: Arc<RwLock<dyn Store>>,
+    live_stream_set: Arc<RwLock<HashSet<H256>>>,
+    config: RenewConfig,
+    status: SharedRenewStatus,
+    trigger_rx: mpsc::UnboundedReceiver<()>,
+) {
+    executor.spawn(
+        async move { run(store, live_stream_set, config, status, trigger_rx).await },
+        "kv renewer",
+    );
 }
 
 #[cfg(test)]
