@@ -227,7 +227,11 @@ pub trait StreamRead {
     /// range `(seq, S)` for races) must do ONE of:
     /// - read [`Self::get_stream_replay_progress`] under the same store guard as
     ///   this snapshot call (replay is sequential, so every op with
-    ///   `version <= progress` is already reflected in the snapshot), or
+    ///   `version < progress` is already reflected in the snapshot —
+    ///   `get_stream_replay_progress` returns the NEXT tx_seq to be replayed,
+    ///   not the last one actually replayed, so the highest version already
+    ///   reflected is `progress - 1`, not `progress`; use that as the fenced
+    ///   `seq`, not the raw `progress` value), or
     /// - read [`Self::get_latest_access_control_seq`] **before** calling this
     ///   method, never after.
     ///
