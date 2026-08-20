@@ -4,8 +4,9 @@
 
 /// Matches storage/chain error text indicating the file was already
 /// uploaded/finalized — treated as renewal success rather than failure.
-pub fn is_already_finalized_err(_msg: &str) -> bool {
-    false // TODO: implement
+pub fn is_already_finalized_err(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("already") && (m.contains("finaliz") || m.contains("exist"))
 }
 
 #[cfg(test)]
