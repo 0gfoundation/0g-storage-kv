@@ -83,7 +83,19 @@ pub async fn drain_stream(
             // field to land in; it's tracked internally by the scanner only.
         }
 
-        if batcher.is_empty() && exhausted {
+        if batcher.is_empty() {
+            if !exhausted {
+                // Only reachable with a degenerate batch cap (e.g.
+                // `batch_max_keys == 0`): `ValueBatcher::push` refuses even
+                // an empty batcher, so `fill_batch` returns "not exhausted"
+                // without ever advancing the cursor. Breaking here (instead
+                // of looping forever on an empty payload) surfaces the
+                // misconfiguration instead of hanging the cycle.
+                warn!(
+                    "renew: stream {:?} drain stopped early -- batch caps (batch_max_bytes={}, batch_max_keys={}) are too small to admit any key",
+                    stream_id, deps.config.batch_max_bytes, deps.config.batch_max_keys
+                );
+            }
             break;
         }
 
@@ -128,11 +140,13 @@ pub async fn drain_stream(
             status.bytes_uploaded += bytes;
         }
 
-        tokio::time::sleep(Duration::from_millis(deps.config.pause_between_batches_ms)).await;
-
         if exhausted {
             break;
         }
+
+        // Only pause between batches when another one is coming up next --
+        // the last batch of a drain shouldn't pay this cost on its way out.
+        tokio::time::sleep(Duration::from_millis(deps.config.pause_between_batches_ms)).await;
     }
 
     Ok((uploaded_keys, pre_seq))
@@ -378,14 +392,17 @@ mod tests {
         (deps, sink)
     }
 
-    async fn mock_deps_dry_run(store: Arc<RwLock<dyn Store>>) -> (CycleDeps, Arc<MockSink>) {
+    async fn mock_deps_dry_run(
+        store: Arc<RwLock<dyn Store>>,
+        max_keys: usize,
+    ) -> (CycleDeps, Arc<MockSink>) {
         let sink = Arc::new(MockSink {
             submitted: Mutex::new(Vec::new()),
         });
         let deps = CycleDeps {
             store,
             sink: sink.clone(),
-            config: Arc::new(base_config(1 << 20, 100, true)),
+            config: Arc::new(base_config(1 << 20, max_keys, true)),
             status: Arc::new(RwLock::new(RenewStatus::default())),
             signer: H160::repeat_byte(9),
         };
@@ -395,11 +412,37 @@ mod tests {
     #[tokio::test]
     async fn drain_uploads_until_no_stale_left() {
         let store = seeded_store_with_stale_keys(3).await;
+        // Seeding writes 3 sequential txs (seq 0, 1, 2), so the store's
+        // next_tx_seq() -- captured by drain_stream as `pre_seq` before any
+        // of its own uploads -- must be exactly 3.
+        assert_eq!(store.read().await.next_tx_seq(), 3);
         let (deps, sink) = mock_deps(store.clone(), 1 << 20, 2).await;
-        let (uploaded, _pre) = drain_stream(&deps, sid(), 1_000, 2_000).await.unwrap();
+        let (uploaded, pre) = drain_stream(&deps, sid(), 1_000, 2_000).await.unwrap();
+        assert_eq!(pre, 3);
         assert_eq!(uploaded.len(), 3);
         // 3 keys with max_keys=2 -> exactly 2 batches
         assert_eq!(sink.submitted.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn drain_stops_when_batch_caps_admit_no_key() {
+        // A degenerate `batch_max_keys == 0` makes `ValueBatcher::push`
+        // refuse even an empty batcher, so `fill_batch` never advances the
+        // cursor and reports "not exhausted" every call. Regression test
+        // for the drain loop hanging in that case -- bound the whole call
+        // in a timeout so a reintroduced bug fails this test instead of
+        // hanging the suite.
+        let store = seeded_store_with_stale_keys(1).await;
+        let (deps, sink) = mock_deps(store, 1 << 20, 0).await;
+        let (uploaded, _pre) = tokio::time::timeout(
+            Duration::from_secs(5),
+            drain_stream(&deps, sid(), 1_000, 2_000),
+        )
+        .await
+        .expect("drain_stream must not hang on a degenerate batch cap")
+        .unwrap();
+        assert!(uploaded.is_empty());
+        assert_eq!(sink.submitted.lock().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -430,11 +473,22 @@ mod tests {
 
     #[tokio::test]
     async fn dry_run_submits_nothing() {
+        // max_keys=1 with 2 stale keys: the very first fill_batch call is
+        // *not* exhausted (k0 fits, k1 is rejected as full) -- this
+        // specifically exercises "dry-run stops after one pass even though
+        // the stream isn't fully scanned yet."
         let store = seeded_store_with_stale_keys(2).await;
-        let (deps, sink) = mock_deps_dry_run(store).await;
+        let (deps, sink) = mock_deps_dry_run(store, 1).await;
         let (uploaded, _) = drain_stream(&deps, sid(), 1_000, 2_000).await.unwrap();
         assert!(uploaded.is_empty());
         assert_eq!(sink.submitted.lock().unwrap().len(), 0);
+        // A single fill_batch call over these 2 keys scans both (k0 pushed,
+        // k1 counted-then-rejected as full): keys_scanned == 2. If dry-run
+        // had incorrectly kept looping until the stream was exhausted, a
+        // second fill_batch call would scan the trailing k1 again, pushing
+        // keys_scanned to 3 -- so this also proves it didn't drain
+        // everything in a hidden second pass.
+        assert_eq!(deps.status.read().await.keys_scanned, 2);
     }
 
     #[tokio::test]
