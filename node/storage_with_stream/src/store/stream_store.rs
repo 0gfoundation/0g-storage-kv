@@ -803,4 +803,27 @@ mod tests {
         let read = store.get_stream_ids().await.unwrap();
         assert_eq!(read, vec![id]);
     }
+
+    #[tokio::test]
+    async fn migration_adds_time_columns_to_old_schema() {
+        let store = StreamStore::new_in_memory().await.unwrap();
+        // simulate a pre-upgrade DB: old-shape tables already exist
+        store.connection.call(|conn| -> rusqlite::Result<()> {
+            conn.execute(
+                "CREATE TABLE t_stream (stream_id BLOB NOT NULL, key BLOB NOT NULL, version INTEGER NOT NULL, start_index INTEGER NOT NULL, end_index INTEGER NOT NULL, PRIMARY KEY (stream_id, key, version)) WITHOUT ROWID", [])?;
+            conn.execute(
+                "CREATE TABLE t_access_control (stream_id BLOB NOT NULL, key BLOB, version INTEGER NOT NULL, account BLOB, op_type INTEGER NOT NULL, operator BLOB NOT NULL)", [])?;
+            Ok(())
+        }).await.unwrap();
+
+        store.create_tables_if_not_exist().await.unwrap();
+        // columns exist and are writable on both tables
+        store.connection.call(|conn| -> rusqlite::Result<()> {
+            conn.execute("INSERT INTO t_stream (stream_id, key, version, start_index, end_index, created_at, updated_at) VALUES (X'01', X'02', 1, 0, 0, 5, 5)", [])?;
+            conn.execute("INSERT INTO t_access_control (stream_id, version, op_type, operator, created_at, updated_at) VALUES (X'01', 1, 0, X'00', 5, 5)", [])?;
+            Ok(())
+        }).await.unwrap();
+        // idempotent: second run must not fail with duplicate column
+        store.create_tables_if_not_exist().await.unwrap();
+    }
 }
