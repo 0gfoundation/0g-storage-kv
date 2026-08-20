@@ -63,7 +63,9 @@ class KVDownloadSkipTest(KVTestFramework):
         """Submit a tx with file upload. Returns the writes list."""
         writes = [rand_write(stream_id=stream_id, size=100)]
         chunk_data, tags = create_kv_data(MAX_U64, [], writes, [])
-        submissions, data_root = create_submission(chunk_data, tags)
+        submissions, data_root = create_submission(
+            chunk_data, tags, TX_PARAMS["from"]
+        )
         self.contract.submit(submissions, tx_prarams=TX_PARAMS)
         wait_until(
             lambda: self.contract.num_submissions() == self.next_tx_seq + 1
@@ -92,7 +94,9 @@ class KVDownloadSkipTest(KVTestFramework):
         """Submit a tx but don't upload file data. Should be skipped."""
         writes = [rand_write(stream_id=stream_id, size=100)]
         chunk_data, tags = create_kv_data(MAX_U64, [], writes, [])
-        submissions, data_root = create_submission(chunk_data, tags)
+        submissions, data_root = create_submission(
+            chunk_data, tags, TX_PARAMS["from"]
+        )
         self.contract.submit(submissions, tx_prarams=TX_PARAMS)
         wait_until(
             lambda: self.contract.num_submissions() == self.next_tx_seq + 1

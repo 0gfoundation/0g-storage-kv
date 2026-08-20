@@ -90,7 +90,7 @@ class KVPutGetTest(KVTestFramework):
                 : random.randrange(len(chunk_data) // 2, len(chunk_data))
             ]
         submissions, data_root = create_submission(
-            chunk_data, tags if given_tags is None else given_tags
+            chunk_data, tags if given_tags is None else given_tags, tx_params["from"]
         )
         self.contract.submit(submissions, tx_prarams=tx_params)
         wait_until(lambda: self.contract.num_submissions() == self.next_tx_seq + 1)
@@ -273,7 +273,9 @@ class KVPutGetTest(KVTestFramework):
         encrypted_data = encrypt_kv_data(encryption_key, chunk_data)
 
         # Submit encrypted data to blockchain and storage nodes
-        submissions, data_root = create_submission(encrypted_data, tags)
+        submissions, data_root = create_submission(
+            encrypted_data, tags, TX_PARAMS["from"]
+        )
         self.contract.submit(submissions, tx_prarams=TX_PARAMS)
         wait_until(
             lambda: self.contract.num_submissions() == self.next_tx_seq + 1
@@ -308,7 +310,9 @@ class KVPutGetTest(KVTestFramework):
         )
         encrypted_data2 = encrypt_kv_data(encryption_key, chunk_data2)
 
-        submissions2, data_root2 = create_submission(encrypted_data2, tags2)
+        submissions2, data_root2 = create_submission(
+            encrypted_data2, tags2, TX_PARAMS["from"]
+        )
         self.contract.submit(submissions2, tx_prarams=TX_PARAMS)
         wait_until(
             lambda: self.contract.num_submissions() == self.next_tx_seq + 1
