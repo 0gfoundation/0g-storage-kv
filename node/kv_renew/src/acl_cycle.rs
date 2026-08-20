@@ -111,16 +111,27 @@ async fn acl_advanced_past(
     Ok(latest > snapshot_seq)
 }
 
-/// Reads `(snapshot_seq, EffectiveAcl)` under one store read guard. Replay
-/// is strictly sequential, so every access-control op with
-/// `version <= snapshot_seq` is already reflected in the snapshot -- see the
-/// ordering-contract doc comments on `Store::get_effective_access_control`.
+/// Reads `(snapshot_seq, EffectiveAcl)` under one store read guard.
+///
+/// `get_stream_replay_progress` returns the NEXT tx_seq to be replayed, not
+/// the last one actually replayed: `put_stream` (and the stream replayer)
+/// both advance it to `version + 1` in the same transaction that commits
+/// `version`. So the highest version already reflected in the snapshot is
+/// `progress - 1`, not `progress` -- hence the `saturating_sub(1)` below
+/// (`progress == 0`, meaning nothing has replayed yet, saturates to `0`
+/// harmlessly: the effective ACL is empty at that point too, so the caller
+/// finds 0 ops to emit and never acts on `snapshot_seq` at all).
+///
+/// With that correction applied, replay's strict sequentiality means every
+/// access-control op with `version <= snapshot_seq` is already reflected in
+/// the snapshot; see the ordering-contract doc comments on
+/// `Store::get_effective_access_control`.
 async fn take_snapshot(
     store: &Arc<RwLock<dyn Store>>,
     stream_id: H256,
 ) -> Result<(u64, EffectiveAcl)> {
     let guard = store.read().await;
-    let snapshot_seq = guard.get_stream_replay_progress().await?;
+    let snapshot_seq = guard.get_stream_replay_progress().await?.saturating_sub(1);
     let acl = guard.get_effective_access_control(stream_id).await?;
     drop(guard);
     Ok((snapshot_seq, acl))
@@ -181,48 +192,34 @@ async fn detect_and_record_conflicts(
     Ok(())
 }
 
+/// Snapshot -> `emit_acl_ops` (skip if 0 ops) -> `build`/`encode`/tags, in
+/// one unit so the pre-submit re-check (below) can redo the whole thing from
+/// a fresh snapshot with a single call. `None` means "nothing to emit" --
+/// the caller returns `Ok(())` without ever touching the sink.
+async fn snapshot_and_encode(
+    deps: &CycleDeps,
+    stream_id: H256,
+) -> Result<Option<(u64, EffectiveAcl, usize, Vec<u8>, Vec<u8>)>> {
+    let (snapshot_seq, acl) = take_snapshot(&deps.store, stream_id).await?;
+    let Some((builder, n)) = build_acl_batch(stream_id, &acl, deps.signer) else {
+        return Ok(None);
+    };
+    let built = builder.build(None)?;
+    let encoded = built.encode()?;
+    let tags = builder.build_tags(None);
+    Ok(Some((snapshot_seq, acl, n, encoded, tags)))
+}
+
 /// Everything from the snapshot fence onward (spec §5 steps 3-8): touches
 /// only the store and the sink, never the chain directly, so it's the piece
 /// unit-tested against a mock `BatchSink`. `renew_stream_acl_inner` wraps
 /// this with the chain-side caught-up gate.
 async fn renew_stream_acl_after_gate(deps: &CycleDeps, stream_id: H256) -> Result<()> {
-    let (mut snapshot_seq, mut acl) = take_snapshot(&deps.store, stream_id).await?;
-
-    let Some((mut builder, mut n)) = build_acl_batch(stream_id, &acl, deps.signer) else {
+    let Some((mut snapshot_seq, mut acl, n, encoded, mut tags)) =
+        snapshot_and_encode(deps, stream_id).await?
+    else {
         return Ok(());
     };
-
-    // Pre-submit re-check: the batch above was built off `snapshot_seq`, but
-    // sync and replay keep running while that happens. One retry from a
-    // fresh snapshot; still dirty after that -> skip rather than pay for a
-    // batch that's doomed to race again (spec §5, guard 2).
-    if acl_advanced_past(&deps.store, stream_id, snapshot_seq).await? {
-        warn!(
-            "renew: ACL snapshot for stream {:?} went stale before submit -- retrying from a fresh snapshot",
-            stream_id
-        );
-        let (seq2, acl2) = take_snapshot(&deps.store, stream_id).await?;
-        snapshot_seq = seq2;
-        acl = acl2;
-        match build_acl_batch(stream_id, &acl, deps.signer) {
-            Some((b, count)) => {
-                builder = b;
-                n = count;
-            }
-            None => return Ok(()),
-        }
-        if acl_advanced_past(&deps.store, stream_id, snapshot_seq).await? {
-            warn!(
-                "renew: ACL snapshot for stream {:?} still stale after retry -- skipping ACL renewal this cycle",
-                stream_id
-            );
-            return Ok(());
-        }
-    }
-
-    let built = builder.build(None)?;
-    let encoded = built.encode()?;
-    let tags = builder.build_tags(None);
 
     if deps.config.dry_run {
         info!(
@@ -232,11 +229,45 @@ async fn renew_stream_acl_after_gate(deps: &CycleDeps, stream_id: H256) -> Resul
         return Ok(());
     }
 
-    let data = into_upload_data(
+    let mut data = into_upload_data(
         encoded,
         deps.config.encryption_key,
         deps.config.wallet_private_key,
     )?;
+
+    // Pre-submit re-check, placed immediately before the on-chain send so it
+    // also covers the build/encode/encrypt work just above (not only the
+    // snapshot read itself): one retry, redoing the whole snapshot -> emit
+    // -> encode -> encrypt sequence from a fresh snapshot, if any ACL op
+    // replayed past `snapshot_seq` while all of that ran; still dirty after
+    // the retry -> skip rather than pay for a batch that's doomed to race
+    // again (spec §5, guard 2).
+    if acl_advanced_past(&deps.store, stream_id, snapshot_seq).await? {
+        warn!(
+            "renew: ACL snapshot for stream {:?} went stale before submit -- retrying from a fresh snapshot",
+            stream_id
+        );
+        let Some((seq2, acl2, _n2, encoded2, tags2)) = snapshot_and_encode(deps, stream_id).await?
+        else {
+            return Ok(());
+        };
+        snapshot_seq = seq2;
+        acl = acl2;
+        tags = tags2;
+        data = into_upload_data(
+            encoded2,
+            deps.config.encryption_key,
+            deps.config.wallet_private_key,
+        )?;
+        if acl_advanced_past(&deps.store, stream_id, snapshot_seq).await? {
+            warn!(
+                "renew: ACL snapshot for stream {:?} still stale after retry -- skipping ACL renewal this cycle",
+                stream_id
+            );
+            return Ok(());
+        }
+    }
+
     let root = deps.sink.submit(data, tags).await?;
 
     // Poll for the tx seq the upload resolved to (10s interval, 120s
@@ -263,7 +294,7 @@ async fn renew_stream_acl_after_gate(deps: &CycleDeps, stream_id: H256) -> Resul
     }
     let Some(batch_seq) = batch_seq else {
         warn!(
-            "renew: ACL batch for stream {:?} did not resolve to a tx seq within 120s -- detection deferred to next cycle",
+            "renew: ACL batch for stream {:?} did not resolve to a tx seq within 120s -- conflict detection skipped for this batch; overrides in this window will not be reported",
             stream_id
         );
         return Ok(());
@@ -278,7 +309,7 @@ async fn renew_stream_acl_after_gate(deps: &CycleDeps, stream_id: H256) -> Resul
     .await
     {
         warn!(
-            "renew: ACL batch for stream {:?} (seq {}) had not replayed after 10 minutes -- detection deferred to next cycle",
+            "renew: ACL batch for stream {:?} (seq {}) had not replayed after 10 minutes -- conflict detection skipped for this batch; overrides in this window will not be reported",
             stream_id, batch_seq
         );
         return Ok(());
@@ -303,6 +334,17 @@ async fn renew_stream_acl_after_gate(deps: &CycleDeps, stream_id: H256) -> Resul
 /// landed on chain but hasn't replayed locally yet. On timeout, ACL renewal
 /// is skipped for this stream this cycle; values still renew regardless
 /// (see `renew_stream_acl`'s caller in `service.rs`).
+///
+/// `numSubmissions` (`head`) is a count, so the highest actual on-chain
+/// tx_seq is `head - 1`; `get_stream_replay_progress` is itself a count (the
+/// next tx_seq to be replayed, not the last one replayed -- see
+/// `take_snapshot`'s doc comment), so "the last submission has replayed" is
+/// `replay_progress >= head`, not `replay_progress + 1 >= head`.
+///
+/// A transient `head_submissions` RPC error does not abort the gate: it's
+/// logged at WARN and treated as "not caught up yet" for this iteration,
+/// same as any other not-yet-caught-up outcome, so a single flaky RPC call
+/// doesn't cost the whole 60s budget in one shot.
 async fn caught_up_with_chain(
     deps: &CycleDeps,
     chain: &ChainView,
@@ -310,18 +352,34 @@ async fn caught_up_with_chain(
 ) -> Result<bool> {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let head = chain.head_submissions().await?;
-        let next_tx_seq = deps.store.read().await.next_tx_seq();
-        let replay_progress = deps.store.read().await.get_stream_replay_progress().await?;
-        if next_tx_seq >= head && replay_progress + 1 >= head {
-            return Ok(true);
-        }
-        if Instant::now() >= deadline {
-            warn!(
-                "renew: ACL caught-up gate timed out for stream {:?} (chain head {}, next_tx_seq {}, replay_progress {}) -- skipping ACL renewal this cycle",
-                stream_id, head, next_tx_seq, replay_progress
-            );
-            return Ok(false);
+        match chain.head_submissions().await {
+            Ok(head) => {
+                let next_tx_seq = deps.store.read().await.next_tx_seq();
+                let replay_progress = deps.store.read().await.get_stream_replay_progress().await?;
+                if next_tx_seq >= head && replay_progress >= head {
+                    return Ok(true);
+                }
+                if Instant::now() >= deadline {
+                    warn!(
+                        "renew: ACL caught-up gate timed out for stream {:?} (chain head {}, next_tx_seq {}, replay_progress {}) -- skipping ACL renewal this cycle",
+                        stream_id, head, next_tx_seq, replay_progress
+                    );
+                    return Ok(false);
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "renew: ACL caught-up gate: head_submissions failed for stream {:?}: {} -- treating as not-caught-up and retrying within the 60s budget",
+                    stream_id, e
+                );
+                if Instant::now() >= deadline {
+                    warn!(
+                        "renew: ACL caught-up gate timed out for stream {:?} (last error: {}) -- skipping ACL renewal this cycle",
+                        stream_id, e
+                    );
+                    return Ok(false);
+                }
+            }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -561,6 +619,11 @@ mod tests {
 
     #[tokio::test]
     async fn acl_advanced_past_detects_a_later_op() {
+        // Derives `snapshot_seq` from a real `take_snapshot` call rather
+        // than a hand-picked constant -- a regression in the fence's
+        // `progress - 1` arithmetic (the exact off-by-one this guards
+        // against) would show up here as a wrong `snapshot_seq` value, not
+        // just a wrong `acl_advanced_past` verdict.
         let store: Arc<RwLock<dyn Store>> =
             Arc::new(RwLock::new(StoreManager::memorydb().await.unwrap()));
         let u1 = H160::repeat_byte(1);
@@ -572,11 +635,19 @@ mod tests {
             vec![(AccessControlOps::GRANT_WRITER_ROLE, u1, vec![])],
         )
         .await;
-        // A fence taken at snapshot_seq 0 already saw this op (0 is not
-        // strictly greater than 0): not advanced-past.
-        assert!(!acl_advanced_past(&store, sid(), 0).await.unwrap());
+        // Real fence right after version 0 lands: replay progress is 1
+        // (next tx_seq to replay), so the corrected snapshot_seq is 0 (the
+        // highest version actually reflected in the snapshot).
+        let (snapshot_seq, _) = take_snapshot(&store, sid()).await.unwrap();
+        assert_eq!(snapshot_seq, 0);
+        assert!(!acl_advanced_past(&store, sid(), snapshot_seq)
+            .await
+            .unwrap());
 
-        // A second ACL op lands at version 1.
+        // A second ACL op lands at version == snapshot_seq + 1 -- exactly
+        // the edge the off-by-one bug missed (a racing op landing in the
+        // very next tx after the fence). The fence taken above must now be
+        // considered stale.
         seed_acl_commit(
             &store,
             sid(),
@@ -584,10 +655,17 @@ mod tests {
             vec![(AccessControlOps::GRANT_WRITER_ROLE, u1, vec![])],
         )
         .await;
-        // A fence taken at snapshot_seq 0 is now stale (version 1 > 0);
-        // a fence taken at snapshot_seq 1 still isn't (1 is not > 1).
-        assert!(acl_advanced_past(&store, sid(), 0).await.unwrap());
-        assert!(!acl_advanced_past(&store, sid(), 1).await.unwrap());
+        assert!(acl_advanced_past(&store, sid(), snapshot_seq)
+            .await
+            .unwrap());
+
+        // A fresh fence taken now (after both ops) is not stale relative to
+        // itself.
+        let (snapshot_seq2, _) = take_snapshot(&store, sid()).await.unwrap();
+        assert_eq!(snapshot_seq2, 1);
+        assert!(!acl_advanced_past(&store, sid(), snapshot_seq2)
+            .await
+            .unwrap());
     }
 
     // ---- detect_and_record_conflicts ------------------------------------
@@ -597,8 +675,6 @@ mod tests {
         let store: Arc<RwLock<dyn Store>> =
             Arc::new(RwLock::new(StoreManager::memorydb().await.unwrap()));
         let u2 = H160::repeat_byte(2);
-        // The conflicting op must land strictly inside (snapshot_seq=0,
-        // batch_seq=2): seed it at version 1.
         seed_acl_commit(
             &store,
             sid(),
@@ -606,6 +682,17 @@ mod tests {
             vec![(AccessControlOps::GRANT_WRITER_ROLE, u2, vec![])],
         )
         .await;
+
+        // Real fence, taken right after version 0 -- exercises the
+        // corrected `progress - 1` arithmetic instead of a hand-picked
+        // constant divorced from what `take_snapshot` actually produces.
+        let (snapshot_seq, acl) = take_snapshot(&store, sid()).await.unwrap();
+        assert_eq!(snapshot_seq, 0);
+        assert_eq!(acl.writers, vec![u2]);
+
+        // The racing revoke lands immediately after the fence, at
+        // version == snapshot_seq + 1 -- the exact edge the off-by-one bug
+        // missed (the window used to require version > 1, excluding it).
         seed_acl_commit(
             &store,
             sid(),
@@ -614,15 +701,9 @@ mod tests {
         )
         .await;
 
-        let acl = EffectiveAcl {
-            admins: vec![],
-            writers: vec![u2],
-            special_keys: vec![],
-            special_writers: vec![],
-        };
         let status: SharedRenewStatus = Arc::new(RwLock::new(RenewStatus::default()));
 
-        detect_and_record_conflicts(&store, &status, sid(), 0, 2, &acl, H160::zero())
+        detect_and_record_conflicts(&store, &status, sid(), snapshot_seq, 2, &acl, H160::zero())
             .await
             .unwrap();
 
@@ -646,6 +727,8 @@ mod tests {
             vec![(AccessControlOps::GRANT_WRITER_ROLE, u2, vec![])],
         )
         .await;
+        let (snapshot_seq, acl) = take_snapshot(&store, sid()).await.unwrap();
+        assert_eq!(snapshot_seq, 0);
         seed_acl_commit(
             &store,
             sid(),
@@ -654,12 +737,6 @@ mod tests {
         )
         .await;
 
-        let acl = EffectiveAcl {
-            admins: vec![],
-            writers: vec![u2],
-            special_keys: vec![],
-            special_writers: vec![],
-        };
         let status: SharedRenewStatus = Arc::new(RwLock::new(RenewStatus::default()));
         {
             let mut s = status.write().await;
@@ -674,7 +751,7 @@ mod tests {
             }
         }
 
-        detect_and_record_conflicts(&store, &status, sid(), 0, 2, &acl, H160::zero())
+        detect_and_record_conflicts(&store, &status, sid(), snapshot_seq, 2, &acl, H160::zero())
             .await
             .unwrap();
 
@@ -814,8 +891,10 @@ mod tests {
 
         // resolve_tx_seq resolves to the current replay progress (1) so
         // `wait_replay` (target 1) is satisfied on its very first check --
-        // no real sleeping, and the detection window (1, 1) is empty by
-        // construction (exclusive both ends), so no conflict is expected.
+        // no real sleeping. The corrected fence sees snapshot_seq = 0 (the
+        // one committed op, at version 0), so the detection window (0, 1)
+        // is empty by construction (exclusive both ends), and no conflict
+        // is expected.
         let sink = Arc::new(MockSink {
             submitted: Mutex::new(0),
             resolve_seq: Some(1),
