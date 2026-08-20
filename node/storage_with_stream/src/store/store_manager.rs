@@ -1,7 +1,7 @@
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use ethereum_types::{H160, H256};
-use kv_types::{AccessControlSet, KVTransaction, KeyValuePair, StreamWriteSet};
+use kv_types::{AccessControlSet, KVTransaction, KeyValuePair, StaleKey, StreamWriteSet};
 use shared_types::{ChunkArray, FlowProof};
 use std::path::Path;
 use std::sync::Arc;
@@ -240,6 +240,18 @@ impl StreamRead for StoreManager {
 
     async fn get_last(&self, stream_id: H256, version: u64) -> Result<Option<KeyValuePair>> {
         self.stream_store.get_last(stream_id, version).await
+    }
+
+    async fn get_stale_stream_keys(
+        &self,
+        stream_id: H256,
+        cutoff: u64,
+        cursor: Vec<u8>,
+        limit: u64,
+    ) -> Result<Vec<StaleKey>> {
+        self.stream_store
+            .get_stale_stream_keys(stream_id, cutoff, cursor, limit)
+            .await
     }
 }
 
