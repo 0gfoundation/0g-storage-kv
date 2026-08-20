@@ -9,7 +9,12 @@ from config.node_config import TX_PARAMS, TX_PARAMS1, GENESIS_ACCOUNT, GENESIS_A
 # Everything is "stale" the instant it lands, so the renewer sweeps every key
 # on its very first cycle instead of waiting out a real max-age window.
 RENEW_MAX_AGE_SECS = 1
-RENEW_CYCLE_INTERVAL_SECS = 5
+# The service waits at most one cycle interval for a renewal to replay before
+# recording the outcome, so this doubles as the verification window. Keep it
+# comfortably above the devnet's submit-to-replay latency (a few seconds):
+# too short and the renewal lands *after* the check that would have counted
+# it, leaving `keysRenewed` at 0 even though the write went through.
+RENEW_CYCLE_INTERVAL_SECS = 15
 RENEW_STARTUP_DELAY_SECS = 1
 RENEW_PAUSE_BETWEEN_BATCHES_MS = 100
 
@@ -20,7 +25,6 @@ class KVRenewTest(KVTestFramework):
         self.num_nodes = 1
 
     def run_test(self):
-        self.next_tx_seq = 0
         renew_stream_id = to_stream_id(0)
         # A second stream first written by a *different* account: that
         # account becomes its admin, so the renew signer (GENESIS_ACCOUNT)
@@ -70,9 +74,17 @@ class KVRenewTest(KVTestFramework):
         # 4. Status reflects the work: at least one key renewed, at least
         #    one key skipped for lack of permission (the other stream, every
         #    cycle it's rescanned), and nothing stuck.
+        #
+        #    The counters are published as each cycle finishes its work, so
+        #    they trail the replayed version observed in step 3 -- poll rather
+        #    than sampling once.
+        def counters_published():
+            s = kv.rpc.kv_getRenewStatus()
+            return s["keysRenewed"] >= 1 and s["keysSkippedPermission"] >= 1
+
+        wait_until(counters_published, timeout=180)
         status = kv.rpc.kv_getRenewStatus()
-        assert status["keysRenewed"] >= 1, status
-        assert status["keysSkippedPermission"] >= 1, status
+        self.log.info("renew status: %s", status)
         assert_equal(len(status["stuckKeys"]), 0)
 
         # 5. The permission-skipped key must not have been touched at all.
@@ -86,19 +98,23 @@ class KVRenewTest(KVTestFramework):
         kv = self.kv_nodes[0]
         writes = [rand_write(stream_id, size=32)]
         chunk_data, tags = create_kv_data(MAX_U64, [], writes, [])
-        submissions, data_root = create_submission(chunk_data, tags)
+        submissions, data_root = create_submission(
+            chunk_data, tags, tx_params["from"]
+        )
         self.contract.submit(submissions, tx_prarams=tx_params)
-        wait_until(lambda: self.contract.num_submissions() == self.next_tx_seq + 1)
 
+        # The renewal service submits to the same Flow contract on its own
+        # schedule, so neither the contract's total submission count nor a
+        # locally incremented counter identifies *this* write's transaction:
+        # both txs can even land in the same block. Read the sequence number
+        # back off the storage node instead.
         client = self.nodes[0]
         wait_until(lambda: client.zgs_get_file_info(data_root) is not None)
+        tx_seq = client.zgs_get_file_info(data_root)["tx"]["seq"]
         submit_data(client, chunk_data)
         wait_until(lambda: client.zgs_get_file_info(data_root)["finalized"])
 
-        wait_until(
-            lambda: kv.kv_get_trasanction_result(self.next_tx_seq) == "Commit"
-        )
-        self.next_tx_seq += 1
+        wait_until(lambda: kv.kv_get_trasanction_result(tx_seq) == "Commit")
 
         key_hex, value = writes[0][1], writes[0][3]
         version = kv.kv_get_value(stream_id, key_hex, 0, len(value))["version"]

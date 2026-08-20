@@ -156,7 +156,16 @@ pub async fn drain_stream(
     Ok((uploaded_keys, pre_seq))
 }
 
-/// A key is verified renewed when its latest version now exceeds `pre_seq`.
+/// A key is verified renewed when its latest version has reached `pre_seq`.
+///
+/// `pre_seq` is the `next_tx_seq()` captured before the upload -- the first
+/// sequence number the store had *not* seen -- so every version that
+/// pre-dates the renewal is strictly below it, and the renewal itself lands
+/// at `pre_seq` or later (exactly `pre_seq` whenever the node is caught up
+/// with the chain, which is the steady-state case). The comparison is
+/// therefore inclusive: `>` would reject every renewal that took the very
+/// next slot.
+///
 /// Clears the renew attempt on success; records the failure otherwise.
 /// Returns the renewed count.
 pub async fn verify_renewed(
@@ -172,7 +181,7 @@ pub async fn verify_renewed(
             .await
             .get_latest_version_before(*stream_id, Arc::new(key.clone()), u64::MAX)
             .await?;
-        if latest > pre_seq {
+        if latest >= pre_seq {
             store
                 .write()
                 .await
@@ -286,7 +295,7 @@ mod tests {
 
     /// Bridges the stream's replay progress up to `seq` (filler commits with
     /// no write set for any intervening slot) and writes a fresh version of
-    /// `key` at exactly `seq`, timestamped `ts`. `seq` must be `> pre_seq`
+    /// `key` at exactly `seq`, timestamped `ts`. `seq` must be `>= pre_seq`
     /// (the `next_tx_seq()` read before calling this) for `verify_renewed`
     /// to detect it as a landed renewal.
     async fn append_new_version(
@@ -473,6 +482,28 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    /// The renewal lands at *exactly* `pre_seq` -- the common case, since
+    /// `pre_seq` is `next_tx_seq()`, i.e. the first sequence number the
+    /// store has not seen, and a caught-up node's next submission takes
+    /// precisely that slot. `verify_renewed` must count this as renewed.
+    #[tokio::test]
+    async fn verify_counts_renewal_landing_exactly_at_pre_seq() {
+        let store = seeded_store_with_stale_keys(1).await;
+        let keys = vec![(sid(), b"k0".to_vec())];
+        let pre = store.read().await.next_tx_seq();
+        append_new_version(&store, sid(), b"k0", pre, 9_999).await;
+
+        let renewed = verify_renewed(&store, &keys, pre, 2_000).await.unwrap();
+        assert_eq!(renewed, 1);
+        assert!(store
+            .read()
+            .await
+            .get_renew_attempt(sid(), b"k0".to_vec())
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

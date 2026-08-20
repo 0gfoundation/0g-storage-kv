@@ -70,8 +70,10 @@ pub fn select_streams(live: &HashSet<H256>, configured: &[H256]) -> Vec<H256> {
 }
 
 /// Waits (bounded by `timeout`, polling every `poll`) for every key's latest
-/// version to exceed `pre_seq` -- i.e. for the replayer to catch up with the
-/// renewal upload. Returns as soon as all keys are caught up; otherwise
+/// version to reach `pre_seq` -- i.e. for the replayer to catch up with the
+/// renewal upload. Inclusive for the same reason `verify_renewed` is: a
+/// renewal submitted by a caught-up node takes sequence number `pre_seq`
+/// itself. Returns as soon as all keys are caught up; otherwise
 /// returns once `timeout` elapses regardless, leaving `verify_renewed` (a
 /// single call, made by the caller once this returns) to decide what's
 /// actually landed vs. still stuck.
@@ -104,7 +106,7 @@ pub async fn wait_for_renewals(
                     0
                 }
             };
-            if latest <= pre_seq {
+            if latest < pre_seq {
                 all_caught_up = false;
                 break;
             }
@@ -752,6 +754,30 @@ mod tests {
             .await
             .unwrap();
         assert!(latest > pre_seq);
+    }
+
+    /// A renewal that lands at exactly `pre_seq` -- the steady-state case for
+    /// a node caught up with the chain -- must satisfy the wait, not hold it
+    /// open until the timeout.
+    #[tokio::test]
+    async fn wait_for_renewals_accepts_version_exactly_at_pre_seq() {
+        let store = seeded_store_with_one_key().await;
+        let pre_seq = store.read().await.next_tx_seq();
+        append_new_version(&store, pre_seq, 9_999).await;
+
+        let started = Instant::now();
+        wait_for_renewals(
+            &store,
+            &[(sid(), b"k0".to_vec())],
+            pre_seq,
+            Duration::from_secs(10),
+            Duration::from_millis(10),
+        )
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a renewal at exactly pre_seq must satisfy the wait immediately"
+        );
     }
 
     #[tokio::test]
