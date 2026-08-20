@@ -125,9 +125,12 @@ impl SqliteDBStatements {
 
     pub const PUT_STREAM_WRITE_STATEMENT: &'static str = "
         INSERT OR REPLACE INTO
-            t_stream (stream_id, key, version, start_index, end_index)
+            t_stream (stream_id, key, version, start_index, end_index, created_at, updated_at)
         VALUES
-            (:stream_id, :key, :version, :start_index, :end_index)
+            (:stream_id, :key, :version, :start_index, :end_index,
+             COALESCE((SELECT MIN(created_at) FROM t_stream
+                       WHERE stream_id = :stream_id AND key = :key), :ts),
+             :ts)
     ";
 
     pub const DELETE_STREAM_WRITE_STATEMENT: &'static str =
@@ -137,9 +140,9 @@ impl SqliteDBStatements {
 
     pub const PUT_ACCESS_CONTROL_STATEMENT: &'static str = "
         INSERT OR REPLACE INTO
-            t_access_control (stream_id, key, version, account, op_type, operator)
+            t_access_control (stream_id, key, version, account, op_type, operator, created_at, updated_at)
         VALUES
-            (:stream_id, :key, :version, :account, :op_type, :operator)
+            (:stream_id, :key, :version, :account, :op_type, :operator, :ts, :ts)
     ";
 
     pub const DELETE_ACCESS_CONTROL_STATEMENT: &'static str =
