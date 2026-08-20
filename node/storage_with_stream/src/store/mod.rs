@@ -9,6 +9,7 @@ use shared_types::ChunkArray;
 
 use shared_types::FlowProof;
 
+use anyhow::bail;
 use storage::log_store::log_manager::ENTRY_SIZE;
 use storage::log_store::tx_store::BlockHashAndSubmissionIndex;
 
@@ -81,6 +82,12 @@ impl<T: DataStoreRead + DataStoreWrite + Send + Sync + StreamRead + StreamWrite 
 
 /// Read the full value bytes for a KV pair out of the local flow store.
 /// Ok(None) = data missing locally (tx never downloaded).
+///
+/// A `Some(chunks)` result from the store is assumed to span exactly
+/// `(end_entry - start_entry) * ENTRY_SIZE` bytes. Shorter data (e.g. from
+/// `FlowStore::get_entries`'s entry-0 offset quirk) is a corruption/quirk
+/// signal, not "missing" — it is surfaced as an error rather than silently
+/// treated as `Ok(None)` or sliced out-of-bounds.
 pub fn read_pair_value(store: &dyn Store, pair: &KeyValuePair) -> Result<Option<Vec<u8>>> {
     if pair.end_index == pair.start_index {
         return Ok(Some(vec![]));
@@ -91,6 +98,16 @@ pub fn read_pair_value(store: &dyn Store, pair: &KeyValuePair) -> Result<Option<
         Some(chunks) => {
             let off = (pair.start_index - start_entry * ENTRY_SIZE as u64) as usize;
             let len = (pair.end_index - pair.start_index) as usize;
+            if chunks.data.len() < off + len {
+                bail!(
+                    "read_pair_value: short data from store: start_index={} end_index={} off={} len={} data_len={}",
+                    pair.start_index,
+                    pair.end_index,
+                    off,
+                    len,
+                    chunks.data.len()
+                );
+            }
             Ok(Some(chunks.data[off..off + len].to_vec()))
         }
         None => Ok(None),
@@ -292,5 +309,47 @@ mod read_pair_value_tests {
             ..pair
         };
         assert_eq!(read_pair_value(&store, &empty).unwrap(), Some(vec![]));
+    }
+
+    #[tokio::test]
+    async fn read_pair_value_errors_on_short_data_from_entry_zero_quirk() {
+        let mut store = StoreManager::memorydb().await.unwrap();
+        // Two entries (512 bytes) starting at absolute flow index 0. Reading a
+        // range that starts inside entry 0 forces get_chunk_by_flow_index to
+        // request entries [0, 2), which trips FlowStore::get_entries's
+        // "Tempfix" branch (chunk_index == 0 && offset == 0): it silently
+        // shifts the read forward by one entry and shortens the returned data
+        // by one entry's worth of bytes, so the ChunkArray comes back claiming
+        // to start at 0 but only holding entry 1's 256 bytes.
+        let tx = make_tx(0, 0, 2 * ENTRY_SIZE as u64);
+        store.put_tx(tx.clone()).unwrap();
+        let mut data = vec![0xABu8; ENTRY_SIZE];
+        data.extend(vec![0xCDu8; ENTRY_SIZE]);
+        store
+            .put_chunks_with_tx_hash(
+                0,
+                tx.hash(),
+                ChunkArray {
+                    data,
+                    start_index: 0,
+                },
+                None,
+            )
+            .unwrap();
+
+        // start_entry = 200/256 = 0, end_entry = ceil(300/256) = 2: spans the
+        // quirked entry-0 batch read.
+        let pair = KeyValuePair {
+            stream_id: H256::zero(),
+            key: b"k".to_vec(),
+            start_index: 200,
+            end_index: 300,
+            version: 0,
+        };
+        let err = read_pair_value(&store, &pair).unwrap_err();
+        assert!(
+            err.to_string().contains("short data"),
+            "unexpected error: {err}"
+        );
     }
 }
