@@ -13,6 +13,10 @@ pub const DOMAIN_VERSION: &str = "1";
 /// signed.
 pub const REGISTER_STREAM_PURPOSE: &str = "register-stream";
 
+/// The `purpose` field value sent in every `RenewNow` payload used to
+/// authenticate `admin_renewNow`.
+pub const RENEW_NOW_PURPOSE: &str = "renew-now";
+
 /// Compute the EIP-712 domain separator. The 3-field domain matches the
 /// frontend's `Eip712Domain = { name, version, chainId }` — there is no
 /// `verifyingContract`, so the domain typehash uses only those three fields.
@@ -191,5 +195,50 @@ mod tests {
             recover_register_stream_signer(wallet.address(), [0xbb; 32], chain_id, &signature)
                 .unwrap();
         assert_ne!(recovered, wallet.address());
+    }
+
+    #[tokio::test]
+    async fn renew_now_signature_roundtrip() {
+        let wallet = test_wallet();
+        let issued_at = 1_755_000_000u64;
+        let digest = renew_now_digest(wallet.address(), issued_at, 31337);
+        let sig = wallet.sign_hash(H256::from(digest)).unwrap();
+        let rec = recover_renew_now_signer(wallet.address(), issued_at, 31337, &sig).unwrap();
+        assert_eq!(rec, wallet.address());
+        // different issuedAt -> different digest
+        assert_ne!(digest, renew_now_digest(wallet.address(), issued_at + 1, 31337));
+    }
+
+    #[tokio::test]
+    async fn renew_now_wrong_chain_id_does_not_recover_to_signer() {
+        let wallet = test_wallet();
+        let issued_at = 1_755_000_000u64;
+
+        let digest = renew_now_digest(wallet.address(), issued_at, 16601);
+        let signature = wallet.sign_hash(H256::from(digest)).unwrap();
+
+        let recovered =
+            recover_renew_now_signer(wallet.address(), issued_at, 1, &signature).unwrap();
+        assert_ne!(recovered, wallet.address());
+    }
+
+    #[tokio::test]
+    async fn renew_now_signature_from_different_key_does_not_recover_to_expected_wallet() {
+        let signer = test_wallet();
+        let other_wallet: LocalWallet =
+            "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+                .parse()
+                .unwrap();
+        let issued_at = 1_755_000_000u64;
+        let chain_id = 16601u64;
+
+        let digest = renew_now_digest(other_wallet.address(), issued_at, chain_id);
+        let signature = signer.sign_hash(H256::from(digest)).unwrap();
+
+        let recovered =
+            recover_renew_now_signer(other_wallet.address(), issued_at, chain_id, &signature)
+                .unwrap();
+        assert_eq!(recovered, signer.address());
+        assert_ne!(recovered, other_wallet.address());
     }
 }
