@@ -69,7 +69,7 @@ class DataFetcherTest(KVTestFramework):
                 : random.randrange(len(chunk_data) // 2, len(chunk_data))
             ]
         submissions, data_root = create_submission(
-            chunk_data, tags if given_tags is None else given_tags
+            chunk_data, tags if given_tags is None else given_tags, tx_params["from"]
         )
         self.contract.submit(submissions, tx_prarams=tx_params)
         wait_until(lambda: self.contract.num_submissions() == self.next_tx_seq + 1)

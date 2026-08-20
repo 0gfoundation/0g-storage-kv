@@ -22,6 +22,7 @@ from test_framework.contract_proxy import (
 from test_framework.zgs_node import ZgsNode
 from test_framework.blockchain_node import BlockChainNodeType
 from test_framework.zg_node import ZGNode, zg_node_init_genesis
+from config.node_config import TX_PARAMS
 from utility.utils import PortMin, is_windows_platform, wait_until, assert_equal
 from utility.build_binary import build_cli
 from utility.submission import create_submission, submit_data
@@ -371,7 +372,7 @@ class TestFramework:
         return root
 
     def __submit_file__(self, chunk_data: bytes) -> str:
-        submissions, data_root = create_submission(chunk_data)
+        submissions, data_root = create_submission(chunk_data, TX_PARAMS["from"])
         self.contract.submit(submissions)
         self.num_deployed_contracts += 1
         wait_until(
