@@ -105,10 +105,10 @@ The node can grant write access to other users via standard SDK operations; the 
 
 ### Configuration
 
-See the [Data Lifetime Renewal Options](#data-lifetime-renewal-options) section in `config_example.toml` for all renewal parameters. Key settings:
+See the `Data Lifetime Renewal Options` section in [run/config_example.toml](run/config_example.toml) for all renewal parameters. Key settings:
 
 - `renew_private_key` — the admin's key (leave empty to disable renewal).
-- `renew_enabled` — kill switch (defaults to true if a key is set).
+- `renew_enabled` — defaults to true; the service only runs once `renew_private_key` is set — the flag is a kill switch that doesn't require deleting the key.
 - `renew_max_age_secs` — age threshold (default 180 days).
 - `renew_cycle_interval_secs` — cycle frequency (default 7 days).
 - `renew_dry_run` — scan and log without uploading (useful for testing on old streams).
@@ -137,5 +137,3 @@ If a role change does land during a renewal window:
 3. You must manually re-issue the change and overwrite any keys written under the wrongly restored permission.
 
 This risk is small in practice when following the deployment model above: the stream admin (who is the only one who can revoke) is also the operator running the node, so changes can be coordinated. Third parties can only grant (safe — the snapshot emits nothing for accounts it did not see) or renounce their own role.
-
-## Data Lifetime Renewal Options
