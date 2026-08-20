@@ -123,6 +123,76 @@ impl SqliteDBStatements {
         AccessControlOps::RENOUNCE_WRITER_ROLE
     );
 
+    /// Groupwise-latest ACL snapshot statements (spec §5): each returns, per
+    /// group key, only the row whose `version` is the max among the group's
+    /// grant/revoke op_types — the caller keeps only the grant-variant rows.
+
+    pub const GET_EFFECTIVE_ADMINS_STATEMENT: &'static str = formatcp!(
+        "
+        SELECT account, op_type FROM t_access_control a
+        WHERE stream_id = :stream_id AND op_type IN ({}, {}) AND version = (
+            SELECT MAX(version) FROM t_access_control b
+            WHERE b.stream_id = a.stream_id AND b.account = a.account AND b.op_type IN ({}, {}))
+        ORDER BY account",
+        AccessControlOps::GRANT_ADMIN_ROLE,
+        AccessControlOps::RENOUNCE_ADMIN_ROLE,
+        AccessControlOps::GRANT_ADMIN_ROLE,
+        AccessControlOps::RENOUNCE_ADMIN_ROLE
+    );
+
+    pub const GET_EFFECTIVE_WRITERS_STATEMENT: &'static str = formatcp!(
+        "
+        SELECT account, op_type FROM t_access_control a
+        WHERE stream_id = :stream_id AND op_type IN ({}, {}, {}) AND version = (
+            SELECT MAX(version) FROM t_access_control b
+            WHERE b.stream_id = a.stream_id AND b.account = a.account AND b.op_type IN ({}, {}, {}))
+        ORDER BY account",
+        AccessControlOps::GRANT_WRITER_ROLE,
+        AccessControlOps::REVOKE_WRITER_ROLE,
+        AccessControlOps::RENOUNCE_WRITER_ROLE,
+        AccessControlOps::GRANT_WRITER_ROLE,
+        AccessControlOps::REVOKE_WRITER_ROLE,
+        AccessControlOps::RENOUNCE_WRITER_ROLE
+    );
+
+    pub const GET_EFFECTIVE_SPECIAL_KEYS_STATEMENT: &'static str = formatcp!(
+        "
+        SELECT key, op_type FROM t_access_control a
+        WHERE stream_id = :stream_id AND op_type IN ({}, {}) AND version = (
+            SELECT MAX(version) FROM t_access_control b
+            WHERE b.stream_id = a.stream_id AND b.key = a.key AND b.op_type IN ({}, {}))
+        ORDER BY key",
+        AccessControlOps::SET_KEY_TO_SPECIAL,
+        AccessControlOps::SET_KEY_TO_NORMAL,
+        AccessControlOps::SET_KEY_TO_SPECIAL,
+        AccessControlOps::SET_KEY_TO_NORMAL
+    );
+
+    pub const GET_EFFECTIVE_SPECIAL_WRITERS_STATEMENT: &'static str = formatcp!(
+        "
+        SELECT key, account, op_type FROM t_access_control a
+        WHERE stream_id = :stream_id AND op_type IN ({}, {}, {}) AND version = (
+            SELECT MAX(version) FROM t_access_control b
+            WHERE b.stream_id = a.stream_id AND b.key = a.key AND b.account = a.account AND
+                  b.op_type IN ({}, {}, {}))
+        ORDER BY key, account",
+        AccessControlOps::GRANT_SPECIAL_WRITER_ROLE,
+        AccessControlOps::REVOKE_SPECIAL_WRITER_ROLE,
+        AccessControlOps::RENOUNCE_SPECIAL_WRITER_ROLE,
+        AccessControlOps::GRANT_SPECIAL_WRITER_ROLE,
+        AccessControlOps::REVOKE_SPECIAL_WRITER_ROLE,
+        AccessControlOps::RENOUNCE_SPECIAL_WRITER_ROLE
+    );
+
+    pub const GET_LATEST_ACCESS_CONTROL_SEQ_STATEMENT: &'static str =
+        "SELECT MAX(version) FROM t_access_control WHERE stream_id = :stream_id";
+
+    pub const GET_ACCESS_CONTROL_OPS_IN_RANGE_STATEMENT: &'static str = "
+        SELECT op_type, key, account, version FROM t_access_control
+        WHERE stream_id = :stream_id AND version > :after AND version < :before
+        ORDER BY version ASC
+    ";
+
     pub const PUT_STREAM_WRITE_STATEMENT: &'static str = "
         INSERT OR REPLACE INTO
             t_stream (stream_id, key, version, start_index, end_index, created_at, updated_at)

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use ethereum_types::{H160, H256};
 use kv_types::{
-    AccessControlSet, KVTransaction, KeyValuePair, RenewAttempt, StaleKey, StreamWriteSet,
+    AccessControlSet, AclOpRow, EffectiveAcl, KVTransaction, KeyValuePair, RenewAttempt, StaleKey,
+    StreamWriteSet,
 };
 use shared_types::ChunkArray;
 
@@ -215,6 +216,21 @@ pub trait StreamRead {
     /// Distinct versions with a NULL `updated_at` across `t_stream` and
     /// `t_access_control`, ascending, for the backfill pass (spec §3).
     async fn get_null_time_versions(&self, limit: u64) -> Result<Vec<u64>>;
+
+    /// The stream's current effective ACL snapshot (spec §5): groupwise-latest
+    /// grant/revoke winner per admin, writer, special key, and special writer.
+    async fn get_effective_access_control(&self, stream_id: H256) -> Result<EffectiveAcl>;
+
+    /// Highest `t_access_control` version recorded for the stream, or 0 when none.
+    async fn get_latest_access_control_seq(&self, stream_id: H256) -> Result<u64>;
+
+    /// Access-control ops with `after < version < before`, ascending (both bounds exclusive).
+    async fn get_access_control_ops_in_range(
+        &self,
+        stream_id: H256,
+        after: u64,
+        before: u64,
+    ) -> Result<Vec<AclOpRow>>;
 }
 
 #[async_trait]
