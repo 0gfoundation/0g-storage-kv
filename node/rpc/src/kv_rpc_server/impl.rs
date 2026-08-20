@@ -440,4 +440,60 @@ impl KeyValueRpcServer for KeyValueRpcServerImpl {
             .is_writer_of_stream(account, stream_id, before_version)
             .await?)
     }
+
+    async fn get_renew_status(&self) -> RpcResult<kv_renew::RenewStatus> {
+        debug!("kv_getRenewStatus()");
+        Ok(self.ctx.renew_status.read().await.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use storage_with_stream::{Store, StoreManager};
+    use tokio::sync::RwLock;
+
+    async fn test_context() -> Context {
+        let store: Arc<RwLock<dyn Store>> =
+            Arc::new(RwLock::new(StoreManager::memorydb().await.unwrap()));
+        let live_stream_set = Arc::new(RwLock::new(HashSet::new()));
+        let (shutdown_tx, _shutdown_rx) = futures::channel::mpsc::channel(1);
+
+        let listen_address = "127.0.0.1:0".parse().unwrap();
+        let rpc_config = crate::RPCConfig {
+            enabled: true,
+            listen_address,
+            chunks_per_segment: 1024,
+            indexer_url: None,
+            zgs_nodes: vec![],
+            max_query_len_in_bytes: 1024 * 1024,
+            max_response_body_in_bytes: 10 * 1024 * 1024,
+            zgs_rpc_timeout: 30,
+            chain_id: 16601,
+        };
+
+        Context {
+            config: rpc_config,
+            shutdown_sender: shutdown_tx,
+            store,
+            live_stream_set,
+            chain_id: 16601,
+            renew_status: Default::default(),
+            renew_trigger: None,
+            renew_signer: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn get_renew_status_returns_shared_cell() {
+        let ctx = test_context().await;
+        ctx.renew_status.write().await.keys_renewed = 5;
+        let s = KeyValueRpcServerImpl { ctx: ctx.clone() }
+            .get_renew_status()
+            .await
+            .unwrap();
+        assert_eq!(s.keys_renewed, 5);
+    }
 }

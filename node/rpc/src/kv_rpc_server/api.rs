@@ -118,4 +118,7 @@ pub trait KeyValueRpc {
         stream_id: H256,
         version: Option<u64>,
     ) -> RpcResult<bool>;
+
+    #[method(name = "getRenewStatus")]
+    async fn get_renew_status(&self) -> RpcResult<kv_renew::RenewStatus>;
 }
