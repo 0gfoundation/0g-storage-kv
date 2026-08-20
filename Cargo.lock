@@ -9398,6 +9398,7 @@ dependencies = [
  "exit-future",
  "futures",
  "http 0.2.12",
+ "kv_renew",
  "kv_types",
  "libp2p",
  "log_entry_sync 0.1.0",

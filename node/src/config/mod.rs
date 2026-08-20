@@ -59,6 +59,20 @@ build_config! {
 
     // misc
     (log_config_file, (String), "log_config".to_string())
+
+    // renewal
+    (renew_enabled, (bool), true)
+    (renew_private_key, (String), "".to_string())  // 32-byte hex; env ZGS_KV_RENEW_PRIVATE_KEY overrides
+    (renew_max_age_secs, (u64), 15552000) // 180 days
+    (renew_cycle_interval_secs, (u64), 604800) // 7 days
+    (renew_batch_max_bytes, (usize), 8 * 1024 * 1024)
+    (renew_batch_max_keys, (usize), 1000)
+    (renew_pause_between_batches_ms, (u64), 2000)
+    (renew_startup_delay_secs, (u64), 300)
+    (renew_expected_replica, (u64), 1)
+    (renew_stream_ids, (Vec<String>), vec![]) // empty = every live stream
+    (renew_dry_run, (bool), false)
+    (renew_max_attempts, (u64), 3)
 }
 
 #[derive(Debug)]
