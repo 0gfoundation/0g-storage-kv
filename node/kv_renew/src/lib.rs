@@ -3,6 +3,7 @@
 extern crate tracing;
 
 pub mod acl;
+pub mod acl_cycle;
 pub mod batch;
 pub mod clock;
 pub mod cycle;

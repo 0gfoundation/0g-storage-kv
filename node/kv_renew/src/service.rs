@@ -22,6 +22,7 @@ use task_executor::TaskExecutor;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::Instant;
 
+use crate::acl_cycle::{renew_stream_acl, ChainView};
 use crate::cycle::{drain_stream, verify_renewed, CycleDeps};
 use crate::probe::build_clock;
 use crate::upload::{BatchSink, RenewUploader};
@@ -119,12 +120,29 @@ pub async fn wait_for_renewals(
 /// the body of the `tokio::spawn` in `run_cycle`'s per-stream loop below --
 /// see that function's doc comment for why this needs its own task rather
 /// than just running inline.
+///
+/// `chain` is `None` for a stream in `acl_disabled` (renew signer isn't
+/// admin) or when the cycle-wide `ChainView` itself failed to build; either
+/// way, ACL renewal is skipped for this stream but value draining below
+/// still runs. A `renew_stream_acl` error is logged and does NOT abort the
+/// value drain that follows (spec §5 guards are best-effort; stale-value
+/// renewal must not depend on them).
 async fn drain_and_verify_stream(
     deps: CycleDeps,
     stream_id: H256,
     cutoff: u64,
     now: u64,
+    chain: Option<Arc<ChainView>>,
 ) -> Result<()> {
+    if let Some(chain) = &chain {
+        if let Err(e) = renew_stream_acl(&deps, chain, stream_id).await {
+            error!(
+                "renew: ACL renewal failed for stream {:?}: {} -- continuing with value drain",
+                stream_id, e
+            );
+        }
+    }
+
     let (keys, pre_seq) = drain_stream(&deps, stream_id, cutoff, now).await?;
 
     if keys.is_empty() {
@@ -164,17 +182,28 @@ async fn drain_and_verify_stream(
 /// logged and skipped, the rest of the cycle (and the node) carries on.
 ///
 /// `acl_disabled` is the startup-computed set of streams where the renew
-/// signer isn't admin (see `run`'s startup check). Task 19's ACL-renewal
-/// hook will consult it before draining a stream; it's threaded through
-/// unused for now so that hook has a single place to land.
-pub async fn run_cycle(deps: &CycleDeps, streams: &[H256], _acl_disabled: &HashSet<H256>) {
+/// signer isn't admin (see `run`'s startup check); those streams get
+/// `chain = None` regardless of whether `chain` itself is `Some`, so
+/// `drain_and_verify_stream` skips ACL renewal for them. `chain` is `None`
+/// for the whole cycle when the cycle-wide `ChainView` failed to build
+/// (see `run_one_cycle`) -- ACL renewal is then skipped for every stream,
+/// but value draining is unaffected either way.
+pub async fn run_cycle(
+    deps: &CycleDeps,
+    streams: &[H256],
+    acl_disabled: &HashSet<H256>,
+    chain: Option<&Arc<ChainView>>,
+) {
     let now = unix_now();
     let cutoff = now.saturating_sub(deps.config.max_age_secs);
 
     for &stream_id in streams {
         let deps_owned = deps.clone();
+        let chain_owned = chain
+            .filter(|_| !acl_disabled.contains(&stream_id))
+            .cloned();
         match tokio::spawn(async move {
-            drain_and_verify_stream(deps_owned, stream_id, cutoff, now).await
+            drain_and_verify_stream(deps_owned, stream_id, cutoff, now, chain_owned).await
         })
         .await
         {
@@ -349,6 +378,34 @@ async fn run_one_cycle(
             }
         };
 
+    // ChainView for this cycle's ACL-renewal caught-up gate (spec §5, guard
+    // 1), built independently of the balance-check provider above so a bad
+    // flow-contract address (or a transient endpoint hiccup right at this
+    // point) only disables ACL renewal for this cycle -- value draining
+    // below is unaffected either way (see `drain_and_verify_stream`).
+    let chain = match Provider::<Http>::try_from(&config.blockchain_rpc_endpoint) {
+        Ok(chain_provider) => match config.log_contract_address.parse::<Address>() {
+            Ok(flow) => Some(Arc::new(ChainView {
+                provider: Arc::new(chain_provider),
+                flow,
+            })),
+            Err(e) => {
+                warn!(
+                    "renew: failed to parse log_contract_address {:?} for ACL renewal -- skipping ACL renewal this cycle: {}",
+                    config.log_contract_address, e
+                );
+                None
+            }
+        },
+        Err(e) => {
+            warn!(
+                "renew: failed to build chain provider for ACL renewal -- skipping ACL renewal this cycle: {}",
+                e
+            );
+            None
+        }
+    };
+
     let live = live_stream_set.read().await.clone();
     let streams = select_streams(&live, &config.stream_ids);
 
@@ -360,7 +417,7 @@ async fn run_one_cycle(
         signer,
     };
 
-    run_cycle(&deps, &streams, acl_disabled).await;
+    run_cycle(&deps, &streams, acl_disabled, chain.as_ref()).await;
 }
 
 /// The renewal service loop, run as the body of the "kv renewer" task
@@ -817,7 +874,7 @@ mod tests {
         // fail the test -- the real-world equivalent is `must_new_zgs_clients`
         // panicking and (via `TaskExecutor::spawn`'s panic monitor) taking
         // the whole node down with it.
-        run_cycle(&deps, &streams, &acl_disabled).await;
+        run_cycle(&deps, &streams, &acl_disabled, None).await;
 
         // Both streams should have reached `submit` despite each panicking --
         // proof the first stream's panic didn't abort the rest of the cycle.
