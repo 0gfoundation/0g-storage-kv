@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use ethereum_types::{H160, H256};
-use kv_types::{AccessControlSet, KeyValuePair, StaleKey, StreamWriteSet};
+use kv_types::{AccessControlSet, KeyValuePair, RenewAttempt, StaleKey, StreamWriteSet};
 use ssz::{Decode, Encode};
 use std::{path::Path, sync::Arc};
 
@@ -90,6 +90,8 @@ impl StreamStore {
                 for stmt in SqliteDBStatements::CREATE_TX_INDEX_STATEMENTS.iter() {
                     conn.execute(stmt, [])?;
                 }
+                // renew attempt-tracking table
+                conn.execute(SqliteDBStatements::CREATE_RENEW_TABLE_STATEMENT, [])?;
                 Ok(())
             })
             .await
@@ -711,6 +713,114 @@ impl StreamStore {
             .await
     }
 
+    pub async fn record_renew_attempt(
+        &self,
+        stream_id: H256,
+        key: Vec<u8>,
+        ts: u64,
+        tx_hash: Option<H256>,
+        error: Option<String>,
+    ) -> Result<()> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt = conn.prepare(SqliteDBStatements::UPSERT_RENEW_ATTEMPT_STATEMENT)?;
+                stmt.execute(named_params! {
+                    ":stream_id": stream_id.as_ssz_bytes(),
+                    ":key": key,
+                    ":ts": ts as i64,
+                    ":tx_hash": tx_hash.map(|h| h.as_bytes().to_vec()),
+                    ":error": error,
+                })?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn clear_renew_attempt(&self, stream_id: H256, key: Vec<u8>) -> Result<()> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt = conn.prepare(SqliteDBStatements::CLEAR_RENEW_ATTEMPT_STATEMENT)?;
+                stmt.execute(named_params! {
+                    ":stream_id": stream_id.as_ssz_bytes(),
+                    ":key": key,
+                })?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_renew_attempt(
+        &self,
+        stream_id: H256,
+        key: Vec<u8>,
+    ) -> Result<Option<RenewAttempt>> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt = conn.prepare(SqliteDBStatements::GET_RENEW_ATTEMPT_STATEMENT)?;
+                let mut rows = stmt.query_map(
+                    named_params! {
+                        ":stream_id": stream_id.as_ssz_bytes(),
+                        ":key": key,
+                    },
+                    |row| {
+                        let attempts: i64 = row.get(0)?;
+                        let last_attempt_ts: i64 = row.get(1)?;
+                        let last_tx_hash: Option<Vec<u8>> = row.get(2)?;
+                        let last_error: Option<String> = row.get(3)?;
+                        Ok(RenewAttempt {
+                            attempts: attempts as u64,
+                            last_attempt_ts: last_attempt_ts as u64,
+                            last_tx_hash: last_tx_hash.map(|b| H256::from_slice(&b)),
+                            last_error,
+                        })
+                    },
+                )?;
+                if let Some(raw_data) = rows.next() {
+                    return Ok(Some(raw_data?));
+                }
+                Ok(None)
+            })
+            .await
+    }
+
+    pub async fn list_stuck_renewals(
+        &self,
+        min_attempts: u64,
+        limit: u64,
+    ) -> Result<Vec<(H256, Vec<u8>, RenewAttempt)>> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt = conn.prepare(SqliteDBStatements::LIST_STUCK_RENEWALS_STATEMENT)?;
+                let rows = stmt.query_map(
+                    named_params! {
+                        ":min_attempts": min_attempts as i64,
+                        ":limit": limit as i64,
+                    },
+                    |row| {
+                        let stream_id_bytes: Vec<u8> = row.get(0)?;
+                        let key: Vec<u8> = row.get(1)?;
+                        let attempts: i64 = row.get(2)?;
+                        let last_attempt_ts: i64 = row.get(3)?;
+                        let last_tx_hash: Option<Vec<u8>> = row.get(4)?;
+                        let last_error: Option<String> = row.get(5)?;
+                        Ok((
+                            H256::from_slice(&stream_id_bytes),
+                            key,
+                            RenewAttempt {
+                                attempts: attempts as u64,
+                                last_attempt_ts: last_attempt_ts as u64,
+                                last_tx_hash: last_tx_hash.map(|b| H256::from_slice(&b)),
+                                last_error,
+                            },
+                        ))
+                    },
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(Into::into)
+            })
+            .await
+    }
+
     pub async fn get_tx_result(&self, tx_seq: u64) -> Result<Option<String>> {
         self.connection
             .call(move |conn| {
@@ -1003,5 +1113,41 @@ mod tests {
             .unwrap();
         assert_eq!(page2.len(), 1);
         assert_eq!(page2[0].key, b"d".to_vec());
+    }
+
+    #[tokio::test]
+    async fn renew_tracking_upsert_clear_and_stuck() {
+        let store = StreamStore::new_in_memory().await.unwrap();
+        store.create_tables_if_not_exist().await.unwrap();
+        let sid = H256::repeat_byte(2);
+
+        store
+            .record_renew_attempt(sid, b"k".to_vec(), 10, None, Some("no permission".into()))
+            .await
+            .unwrap();
+        store
+            .record_renew_attempt(sid, b"k".to_vec(), 20, Some(H256::repeat_byte(7)), None)
+            .await
+            .unwrap();
+
+        let a = store
+            .get_renew_attempt(sid, b"k".to_vec())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.attempts, 2);
+        assert_eq!(a.last_attempt_ts, 20);
+        assert_eq!(a.last_tx_hash, Some(H256::repeat_byte(7)));
+        assert_eq!(a.last_error, None);
+
+        assert_eq!(store.list_stuck_renewals(2, 10).await.unwrap().len(), 1);
+        assert_eq!(store.list_stuck_renewals(3, 10).await.unwrap().len(), 0);
+
+        store.clear_renew_attempt(sid, b"k".to_vec()).await.unwrap();
+        assert!(store
+            .get_renew_attempt(sid, b"k".to_vec())
+            .await
+            .unwrap()
+            .is_none());
     }
 }
