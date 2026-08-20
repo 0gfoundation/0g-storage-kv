@@ -115,10 +115,53 @@ pub async fn wait_for_renewals(
     }
 }
 
-/// Runs one renewal cycle over `streams`: drain each stream's stale keys,
-/// wait (bounded) for the renewal to replay, then verify+record the
-/// outcome. A single stream's failure is caught and logged here -- it never
-/// stops the rest of the cycle.
+/// Drains, waits for replay, and verifies renewal for one stream. Runs as
+/// the body of the `tokio::spawn` in `run_cycle`'s per-stream loop below --
+/// see that function's doc comment for why this needs its own task rather
+/// than just running inline.
+async fn drain_and_verify_stream(
+    deps: CycleDeps,
+    stream_id: H256,
+    cutoff: u64,
+    now: u64,
+) -> Result<()> {
+    let (keys, pre_seq) = drain_stream(&deps, stream_id, cutoff, now).await?;
+
+    if keys.is_empty() {
+        // Nothing uploaded this pass (nothing stale, or dry-run) --
+        // nothing to wait for or verify.
+        return Ok(());
+    }
+
+    wait_for_renewals(
+        &deps.store,
+        &keys,
+        pre_seq,
+        Duration::from_secs(deps.config.cycle_interval_secs.max(1)),
+        REPLAY_POLL_INTERVAL,
+    )
+    .await;
+
+    let renewed = verify_renewed(&deps.store, &keys, pre_seq, unix_now()).await?;
+    deps.status.write().await.keys_renewed += renewed;
+    Ok(())
+}
+
+/// Runs one renewal cycle over `streams`: for each stream, drain its stale
+/// keys, wait (bounded) for the renewal to replay, then verify+record the
+/// outcome.
+///
+/// Each stream's work runs inside its own `tokio::spawn`, awaited
+/// immediately. This isn't just task hygiene: `RenewUploader::submit`
+/// (invoked from `drain_stream`) falls through to the storage SDK's
+/// `must_new_zgs_clients` when no indexer is configured, and that panics if
+/// a configured storage node is unreachable. Because `spawn_renewer` spawns
+/// this whole service via `TaskExecutor::spawn`, which monitors its task and
+/// shuts the *entire node* down (`ShutdownReason::Failure`) on any panic
+/// from it, an unguarded panic here wouldn't just kill this cycle or this
+/// stream -- it would take the node down. Wrapping each stream's body in its
+/// own `tokio::spawn` turns that into a caught `JoinError`: this stream is
+/// logged and skipped, the rest of the cycle (and the node) carries on.
 ///
 /// `acl_disabled` is the startup-computed set of streams where the renew
 /// signer isn't admin (see `run`'s startup check). Task 19's ACL-renewal
@@ -129,37 +172,17 @@ pub async fn run_cycle(deps: &CycleDeps, streams: &[H256], _acl_disabled: &HashS
     let cutoff = now.saturating_sub(deps.config.max_age_secs);
 
     for &stream_id in streams {
-        let (keys, pre_seq) = match drain_stream(deps, stream_id, cutoff, now).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!(
-                    "renew: drain_stream failed for stream {:?}: {}",
-                    stream_id, e
-                );
-                continue;
-            }
-        };
-
-        if keys.is_empty() {
-            // Nothing uploaded this pass (nothing stale, or dry-run) --
-            // nothing to wait for or verify.
-            continue;
-        }
-
-        wait_for_renewals(
-            &deps.store,
-            &keys,
-            pre_seq,
-            Duration::from_secs(deps.config.cycle_interval_secs.max(1)),
-            REPLAY_POLL_INTERVAL,
-        )
-        .await;
-
-        match verify_renewed(&deps.store, &keys, pre_seq, unix_now()).await {
-            Ok(renewed) => deps.status.write().await.keys_renewed += renewed,
-            Err(e) => error!(
-                "renew: verify_renewed failed for stream {:?}: {}",
-                stream_id, e
+        let deps_owned = deps.clone();
+        match tokio::spawn(async move {
+            drain_and_verify_stream(deps_owned, stream_id, cutoff, now).await
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => error!("renew: stream {:?} cycle failed: {}", stream_id, e),
+            Err(join_err) => error!(
+                "renew: stream {:?} cycle panicked: {} -- continuing with the next stream",
+                stream_id, join_err
             ),
         }
     }
@@ -412,6 +435,12 @@ async fn run(
             Some(_) = trigger_rx.recv() => {}
         }
 
+        // Collapse a burst of queued trigger requests (e.g. several
+        // `admin_renewNow` calls landing while a cycle is running) into the
+        // one cycle we're about to run, instead of racing through
+        // back-to-back cycles for each queued message.
+        while trigger_rx.try_recv().is_ok() {}
+
         let should_run = {
             let mut s = status.write().await;
             if s.cycle_running {
@@ -486,13 +515,20 @@ pub fn spawn_renewer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use ethers::signers::Wallet;
     use kv_types::StreamWrite as KvStreamWrite;
     use kv_types::{AccessControlSet, KVTransaction, StreamWriteSet};
+    use std::sync::Mutex;
     use storage_with_stream::StoreManager;
+    use zg_storage_client::core::dataflow::IterableData;
 
     fn sid() -> H256 {
         H256::repeat_byte(0x7)
+    }
+
+    fn sid2() -> H256 {
+        H256::repeat_byte(0x8)
     }
 
     #[test]
@@ -674,5 +710,121 @@ mod tests {
         )
         .await;
         assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    /// Seeds one stale key each for `sid()` (seq 0) and `sid2()` (seq 1) --
+    /// two distinct streams, so `run_cycle` drives its per-stream loop over
+    /// more than one stream.
+    async fn seeded_store_with_two_streams() -> Arc<RwLock<dyn Store>> {
+        let store: Arc<RwLock<dyn Store>> =
+            Arc::new(RwLock::new(StoreManager::memorydb().await.unwrap()));
+        let mut guard = store.write().await;
+        for (seq, stream_id) in [sid(), sid2()].into_iter().enumerate() {
+            let seq = seq as u64;
+            let tx = KVTransaction {
+                stream_ids: vec![stream_id],
+                sender: H160::zero(),
+                data_merkle_root: H256::zero(),
+                merkle_nodes: vec![(1, H256::zero())],
+                start_entry_index: seq + 1,
+                size: 256,
+                seq,
+            };
+            guard.put_tx(tx).unwrap();
+            guard.put_tx_block_time(seq, 100).unwrap();
+            let write_set = StreamWriteSet {
+                stream_writes: vec![KvStreamWrite {
+                    stream_id,
+                    key: Arc::new(b"k0".to_vec()),
+                    start_index: 0,
+                    end_index: 0,
+                }],
+            };
+            let acl = AccessControlSet {
+                access_controls: vec![],
+                is_admin: Default::default(),
+            };
+            guard
+                .put_stream(seq, H256::zero(), "Commit".into(), Some((write_set, acl)))
+                .await
+                .unwrap();
+        }
+        drop(guard);
+        store
+    }
+
+    /// A `BatchSink` whose `submit` always panics -- stands in for
+    /// `RenewUploader::submit` panicking via the storage SDK's
+    /// `must_new_zgs_clients` when a configured storage node is unreachable
+    /// mid-cycle (a real, supported no-indexer configuration). Counts calls
+    /// so the test can prove every stream got a chance to run rather than
+    /// the whole cycle aborting after the first panic.
+    struct PanicSink {
+        calls: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl BatchSink for PanicSink {
+        async fn submit(&self, _data: Arc<dyn IterableData>, _tags: Vec<u8>) -> Result<H256> {
+            *self.calls.lock().unwrap() += 1;
+            panic!("PanicSink: simulated must_new_zgs_clients-style panic");
+        }
+        async fn resolve_tx_seq(&self, _root: H256) -> Result<Option<u64>> {
+            Ok(None)
+        }
+    }
+
+    fn panic_sink_config() -> RenewConfig {
+        RenewConfig {
+            private_key: [0u8; 32],
+            max_age_secs: 1_000,
+            cycle_interval_secs: 10,
+            batch_max_bytes: 1 << 20,
+            batch_max_keys: 10,
+            pause_between_batches_ms: 0,
+            startup_delay_secs: 0,
+            expected_replica: 1,
+            stream_ids: vec![],
+            dry_run: false,
+            max_attempts: 3,
+            blockchain_rpc_endpoint: String::new(),
+            log_contract_address: String::new(),
+            indexer_url: None,
+            zgs_node_urls: vec![],
+            encryption_key: None,
+            wallet_private_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_cycle_contains_per_stream_panic_and_continues() {
+        let store = seeded_store_with_two_streams().await;
+        let sink = Arc::new(PanicSink {
+            calls: Mutex::new(0),
+        });
+        let deps = CycleDeps {
+            store: store.clone(),
+            sink: sink.clone(),
+            config: Arc::new(panic_sink_config()),
+            status: Arc::new(RwLock::new(crate::RenewStatus::default())),
+            signer: H160::repeat_byte(9),
+        };
+        let streams = vec![sid(), sid2()];
+        let acl_disabled: HashSet<H256> = HashSet::new();
+
+        // If a per-stream panic escaped its `tokio::spawn` boundary instead
+        // of being caught as a `JoinError`, this call itself would panic and
+        // fail the test -- the real-world equivalent is `must_new_zgs_clients`
+        // panicking and (via `TaskExecutor::spawn`'s panic monitor) taking
+        // the whole node down with it.
+        run_cycle(&deps, &streams, &acl_disabled).await;
+
+        // Both streams should have reached `submit` despite each panicking --
+        // proof the first stream's panic didn't abort the rest of the cycle.
+        assert_eq!(
+            *sink.calls.lock().unwrap(),
+            2,
+            "both streams' uploads should have been attempted despite each panicking"
+        );
     }
 }

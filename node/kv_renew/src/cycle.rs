@@ -19,6 +19,10 @@ use crate::{RenewConfig, SharedRenewStatus};
 
 /// Dependencies threaded through one renewal cycle (Task 18 wires these up
 /// from `ZgsKVConfig`/`StoreManager`/`RenewUploader`).
+///
+/// `Clone` (all fields are `Arc`s or `Copy`) so `run_cycle`'s per-stream
+/// `tokio::spawn` (Task 18) can hand each stream its own owned copy.
+#[derive(Clone)]
 pub struct CycleDeps {
     pub store: Arc<RwLock<dyn Store>>,
     pub sink: Arc<dyn BatchSink>,
