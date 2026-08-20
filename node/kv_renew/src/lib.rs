@@ -8,6 +8,7 @@ pub mod clock;
 pub mod cycle;
 pub mod probe;
 pub mod scan;
+pub mod service;
 pub mod types;
 pub mod upload;
 pub use types::*;
