@@ -2,6 +2,101 @@
 //! total value bytes and key count, and wraps the encoded payload for upload
 //! (plaintext, symmetric encryption, or ECIES). See spec §4 steps 4 and 6.
 
+use anyhow::{Context, Result};
+use ethereum_types::H256;
+use std::sync::Arc;
+use zg_storage_client::core::dataflow::IterableData;
+use zg_storage_client::core::encrypted_data::EncryptedData;
+use zg_storage_client::core::in_mem::DataInMemory;
+use zg_storage_client::kv::builder::StreamDataBuilder;
+
+/// Accumulates writes for a single upload, bounded by `max_bytes` (total
+/// value bytes) and `max_keys` (number of writes). Caller re-pushes a
+/// rejected item into a fresh batch.
+pub struct ValueBatcher {
+    builder: StreamDataBuilder,
+    max_bytes: usize,
+    max_keys: usize,
+    bytes: usize,
+    keys: Vec<(H256, Vec<u8>)>,
+}
+
+/// Result of [`ValueBatcher::finish`]: the encoded stream-data payload ready
+/// for upload, its stream-id tags, and the `(stream_id, key)` pairs this
+/// batch renews (for cycle bookkeeping).
+pub struct BuiltBatch {
+    pub encoded: Vec<u8>,
+    pub tags: Vec<u8>,
+    pub keys: Vec<(H256, Vec<u8>)>,
+    pub bytes: usize,
+}
+
+impl ValueBatcher {
+    pub fn new(max_bytes: usize, max_keys: usize) -> Self {
+        Self {
+            builder: StreamDataBuilder::new(u64::MAX),
+            max_bytes,
+            max_keys,
+            bytes: 0,
+            keys: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// false = batch full, item NOT added (caller finishes batch and re-pushes).
+    /// An oversized value is accepted when the batch is empty (its own batch).
+    pub fn push(&mut self, stream_id: H256, key: Vec<u8>, value: Vec<u8>) -> bool {
+        let empty = self.is_empty();
+        let full = (!empty && self.bytes + value.len() > self.max_bytes)
+            || self.keys.len() >= self.max_keys;
+        if full {
+            return false;
+        }
+        self.bytes += value.len();
+        self.keys.push((stream_id, key.clone()));
+        self.builder.set(stream_id, &key, value);
+        true
+    }
+
+    /// Builds and encodes the accumulated writes. Consumes `self` since a
+    /// finished batch is not meant to be reused.
+    pub fn finish(self) -> Result<BuiltBatch> {
+        let data = self.builder.build(None)?;
+        let encoded = data.encode()?;
+        let tags = self.builder.build_tags(None);
+        Ok(BuiltBatch {
+            encoded,
+            tags,
+            keys: self.keys,
+            bytes: self.bytes,
+        })
+    }
+}
+
+/// Wraps an encoded batch for upload. v1 (symmetric): `EncryptedData::new`
+/// with the given key. v2 (ECIES): derives the recipient's compressed SEC1
+/// public key from `wallet_private_key` and calls `EncryptedData::new_ecies`.
+/// Neither: uploads the plaintext `DataInMemory` as-is.
+pub fn into_upload_data(
+    encoded: Vec<u8>,
+    encryption_key: Option<[u8; 32]>,
+    wallet_private_key: Option<[u8; 32]>,
+) -> Result<Arc<dyn IterableData>> {
+    let inner: Arc<dyn IterableData> = Arc::new(DataInMemory::new(encoded)?);
+    match (encryption_key, wallet_private_key) {
+        (Some(key), _) => Ok(Arc::new(EncryptedData::new(inner, key)?)),
+        (None, Some(pk)) => {
+            let secret = k256::SecretKey::from_slice(&pk).context("invalid wallet_private_key")?;
+            let pubkey = secret.public_key().to_sec1_bytes();
+            Ok(Arc::new(EncryptedData::new_ecies(inner, &pubkey)?))
+        }
+        (None, None) => Ok(inner),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
