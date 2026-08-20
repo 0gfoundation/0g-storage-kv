@@ -6,6 +6,7 @@ pub mod acl;
 pub mod batch;
 pub mod clock;
 pub mod probe;
+pub mod scan;
 pub mod types;
 pub mod upload;
 pub use types::*;
