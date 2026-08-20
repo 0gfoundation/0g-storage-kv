@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ethereum_types::{H160, H256};
-use kv_types::{AccessControlSet, KVTransaction, KeyValuePair, StaleKey, StreamWriteSet};
+use kv_types::{
+    AccessControlSet, KVTransaction, KeyValuePair, RenewAttempt, StaleKey, StreamWriteSet,
+};
 use shared_types::ChunkArray;
 
 use shared_types::FlowProof;
@@ -161,6 +163,18 @@ pub trait StreamRead {
         cursor: Vec<u8>,
         limit: u64,
     ) -> Result<Vec<StaleKey>>;
+
+    async fn get_renew_attempt(
+        &self,
+        stream_id: H256,
+        key: Vec<u8>,
+    ) -> Result<Option<RenewAttempt>>;
+
+    async fn list_stuck_renewals(
+        &self,
+        min_attempts: u64,
+        limit: u64,
+    ) -> Result<Vec<(H256, Vec<u8>, RenewAttempt)>>;
 }
 
 #[async_trait]
@@ -184,4 +198,15 @@ pub trait StreamWrite {
     async fn get_tx_result(&self, tx_seq: u64) -> Result<Option<String>>;
 
     async fn revert_stream(&mut self, tx_seq: u64) -> Result<()>;
+
+    async fn record_renew_attempt(
+        &self,
+        stream_id: H256,
+        key: Vec<u8>,
+        ts: u64,
+        tx_hash: Option<H256>,
+        error: Option<String>,
+    ) -> Result<()>;
+
+    async fn clear_renew_attempt(&self, stream_id: H256, key: Vec<u8>) -> Result<()>;
 }

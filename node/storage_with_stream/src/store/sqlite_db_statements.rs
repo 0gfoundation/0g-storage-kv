@@ -275,4 +275,37 @@ impl SqliteDBStatements {
 
     pub const CREATE_TX_INDEX_STATEMENTS: [&'static str; 1] =
         ["CREATE INDEX IF NOT EXISTS tx_result_idex ON t_tx(result)"];
+
+    pub const CREATE_RENEW_TABLE_STATEMENT: &'static str = "
+        CREATE TABLE IF NOT EXISTS t_renew (
+            stream_id BLOB NOT NULL,
+            key BLOB NOT NULL,
+            attempts INTEGER NOT NULL,
+            last_attempt_ts INTEGER NOT NULL,
+            last_tx_hash BLOB,
+            last_error TEXT,
+            PRIMARY KEY (stream_id, key)
+        ) WITHOUT ROWID
+    ";
+
+    pub const UPSERT_RENEW_ATTEMPT_STATEMENT: &'static str = "
+        INSERT INTO t_renew (stream_id, key, attempts, last_attempt_ts, last_tx_hash, last_error)
+        VALUES (:stream_id, :key, 1, :ts, :tx_hash, :error)
+        ON CONFLICT(stream_id, key) DO UPDATE SET
+            attempts = attempts + 1, last_attempt_ts = :ts,
+            last_tx_hash = :tx_hash, last_error = :error
+    ";
+
+    pub const CLEAR_RENEW_ATTEMPT_STATEMENT: &'static str =
+        "DELETE FROM t_renew WHERE stream_id = :stream_id AND key = :key";
+
+    pub const GET_RENEW_ATTEMPT_STATEMENT: &'static str = "
+        SELECT attempts, last_attempt_ts, last_tx_hash, last_error FROM t_renew
+        WHERE stream_id = :stream_id AND key = :key
+    ";
+
+    pub const LIST_STUCK_RENEWALS_STATEMENT: &'static str = "
+        SELECT stream_id, key, attempts, last_attempt_ts, last_tx_hash, last_error FROM t_renew
+        WHERE attempts >= :min_attempts ORDER BY last_attempt_ts ASC LIMIT :limit
+    ";
 }

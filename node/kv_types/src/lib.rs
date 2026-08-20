@@ -138,3 +138,11 @@ pub struct StaleKey {
     pub end_index: u64,
     pub updated_at: u64,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenewAttempt {
+    pub attempts: u64,
+    pub last_attempt_ts: u64,
+    pub last_tx_hash: Option<H256>,
+    pub last_error: Option<String>,
+}

@@ -1,7 +1,9 @@
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use ethereum_types::{H160, H256};
-use kv_types::{AccessControlSet, KVTransaction, KeyValuePair, StaleKey, StreamWriteSet};
+use kv_types::{
+    AccessControlSet, KVTransaction, KeyValuePair, RenewAttempt, StaleKey, StreamWriteSet,
+};
 use shared_types::{ChunkArray, FlowProof};
 use std::path::Path;
 use std::sync::Arc;
@@ -253,6 +255,24 @@ impl StreamRead for StoreManager {
             .get_stale_stream_keys(stream_id, cutoff, cursor, limit)
             .await
     }
+
+    async fn get_renew_attempt(
+        &self,
+        stream_id: H256,
+        key: Vec<u8>,
+    ) -> Result<Option<RenewAttempt>> {
+        self.stream_store.get_renew_attempt(stream_id, key).await
+    }
+
+    async fn list_stuck_renewals(
+        &self,
+        min_attempts: u64,
+        limit: u64,
+    ) -> Result<Vec<(H256, Vec<u8>, RenewAttempt)>> {
+        self.stream_store
+            .list_stuck_renewals(min_attempts, limit)
+            .await
+    }
 }
 
 #[async_trait]
@@ -325,6 +345,23 @@ impl StreamWrite for StoreManager {
         self.stream_store.revert_to(tx_seq).await?;
         self.data_store.revert_to(tx_seq)?;
         Ok(())
+    }
+
+    async fn record_renew_attempt(
+        &self,
+        stream_id: H256,
+        key: Vec<u8>,
+        ts: u64,
+        tx_hash: Option<H256>,
+        error: Option<String>,
+    ) -> Result<()> {
+        self.stream_store
+            .record_renew_attempt(stream_id, key, ts, tx_hash, error)
+            .await
+    }
+
+    async fn clear_renew_attempt(&self, stream_id: H256, key: Vec<u8>) -> Result<()> {
+        self.stream_store.clear_renew_attempt(stream_id, key).await
     }
 }
 
