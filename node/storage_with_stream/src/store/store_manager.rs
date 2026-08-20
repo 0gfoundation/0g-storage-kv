@@ -273,6 +273,10 @@ impl StreamRead for StoreManager {
             .list_stuck_renewals(min_attempts, limit)
             .await
     }
+
+    async fn get_null_time_versions(&self, limit: u64) -> Result<Vec<u64>> {
+        self.stream_store.get_null_time_versions(limit).await
+    }
 }
 
 #[async_trait]
@@ -362,6 +366,10 @@ impl StreamWrite for StoreManager {
 
     async fn clear_renew_attempt(&self, stream_id: H256, key: Vec<u8>) -> Result<()> {
         self.stream_store.clear_renew_attempt(stream_id, key).await
+    }
+
+    async fn backfill_version_time(&self, version: u64, ts: u64) -> Result<()> {
+        self.stream_store.backfill_version_time(version, ts).await
     }
 }
 

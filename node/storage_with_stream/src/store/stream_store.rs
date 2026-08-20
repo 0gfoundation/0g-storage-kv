@@ -821,6 +821,48 @@ impl StreamStore {
             .await
     }
 
+    pub async fn get_null_time_versions(&self, limit: u64) -> Result<Vec<u64>> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt =
+                    conn.prepare(SqliteDBStatements::GET_NULL_TIME_VERSIONS_STATEMENT)?;
+                let rows = stmt.query_map(named_params! { ":limit": limit as i64 }, |row| {
+                    row.get::<_, i64>(0)
+                })?;
+                let versions = rows
+                    .collect::<rusqlite::Result<Vec<i64>>>()?
+                    .into_iter()
+                    .map(convert_to_u64)
+                    .collect();
+                Ok(versions)
+            })
+            .await
+    }
+
+    pub async fn backfill_version_time(&self, version: u64, ts: u64) -> Result<()> {
+        self.connection
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    SqliteDBStatements::BACKFILL_STREAM_TIME_STATEMENT,
+                    named_params! {
+                        ":ts": ts as i64,
+                        ":version": convert_to_i64(version),
+                    },
+                )?;
+                tx.execute(
+                    SqliteDBStatements::BACKFILL_ACCESS_CONTROL_TIME_STATEMENT,
+                    named_params! {
+                        ":ts": ts as i64,
+                        ":version": convert_to_i64(version),
+                    },
+                )?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+    }
+
     pub async fn get_tx_result(&self, tx_seq: u64) -> Result<Option<String>> {
         self.connection
             .call(move |conn| {
@@ -1149,5 +1191,35 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    // NOTE: deviates from the task brief's literal seeds (1,2) because
+    // put_stream's replay-progress guard requires a fresh DB's first commit
+    // to be at tx_seq 0; seeds are shifted down by 1 (0,1) with version
+    // assertions adjusted accordingly.
+    #[tokio::test]
+    async fn backfill_fills_only_nulls() {
+        let store = StreamStore::new_in_memory().await.unwrap();
+        store.create_tables_if_not_exist().await.unwrap();
+        let sid = H256::repeat_byte(3);
+        store
+            .put_stream(0, "Commit".into(), Some(write_set(sid, b"x")), None)
+            .await
+            .unwrap();
+        store
+            .put_stream(1, "Commit".into(), Some(write_set(sid, b"y")), Some(999))
+            .await
+            .unwrap();
+
+        assert_eq!(store.get_null_time_versions(10).await.unwrap(), vec![0]);
+        store.backfill_version_time(0, 555).await.unwrap();
+        assert!(store.get_null_time_versions(10).await.unwrap().is_empty());
+
+        let stale = store
+            .get_stale_stream_keys(sid, 556, vec![], 10)
+            .await
+            .unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].updated_at, 555);
     }
 }

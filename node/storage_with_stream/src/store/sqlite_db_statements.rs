@@ -308,4 +308,17 @@ impl SqliteDBStatements {
         SELECT stream_id, key, attempts, last_attempt_ts, last_tx_hash, last_error FROM t_renew
         WHERE attempts >= :min_attempts ORDER BY last_attempt_ts ASC LIMIT :limit
     ";
+
+    pub const GET_NULL_TIME_VERSIONS_STATEMENT: &'static str = "
+        SELECT DISTINCT version FROM (
+            SELECT version FROM t_stream WHERE updated_at IS NULL
+            UNION SELECT version FROM t_access_control WHERE updated_at IS NULL
+        ) ORDER BY version ASC LIMIT :limit
+    ";
+
+    pub const BACKFILL_STREAM_TIME_STATEMENT: &'static str =
+        "UPDATE t_stream SET updated_at = :ts, created_at = COALESCE(created_at, :ts) WHERE version = :version AND updated_at IS NULL";
+
+    pub const BACKFILL_ACCESS_CONTROL_TIME_STATEMENT: &'static str =
+        "UPDATE t_access_control SET updated_at = :ts, created_at = COALESCE(created_at, :ts) WHERE version = :version AND updated_at IS NULL";
 }
