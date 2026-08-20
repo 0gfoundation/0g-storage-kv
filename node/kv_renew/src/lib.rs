@@ -3,5 +3,6 @@
 extern crate tracing;
 
 pub mod clock;
+pub mod probe;
 pub mod types;
 pub use types::*;
