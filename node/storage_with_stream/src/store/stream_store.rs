@@ -452,11 +452,13 @@ impl StreamStore {
         tx_seq: u64,
         result: String,
         commit_data: Option<(StreamWriteSet, AccessControlSet)>,
+        block_time: Option<u64>,
     ) -> Result<()> {
         self.connection
             .call(move |conn| {
                 let tx = conn.transaction()?;
                 let version = tx_seq;
+                let ts: Option<i64> = block_time.map(|t| t as i64);
 
                 if tx.execute(
                     SqliteDBStatements::UPDATE_STREAM_REPLAY_PROGRESS_STATEMENT,
@@ -479,7 +481,8 @@ impl StreamStore {
                                 ":key": stream_write.key,
                                 ":version": convert_to_i64(version),
                                 ":start_index": stream_write.start_index,
-                                ":end_index": stream_write.end_index
+                                ":end_index": stream_write.end_index,
+                                ":ts": ts,
                             },
                         )?;
                     }
@@ -493,6 +496,7 @@ impl StreamStore {
                                 ":account": access_control.account.as_ssz_bytes(),
                                 ":op_type": access_control.op_type,
                                 ":operator": access_control.operator.as_ssz_bytes(),
+                                ":ts": ts,
                             },
                         )?;
                     }
@@ -814,6 +818,7 @@ pub fn to_access_control_op_name(x: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kv_types::StreamWrite;
     use ssz::Encode;
 
     #[tokio::test]
@@ -853,5 +858,68 @@ mod tests {
         }).await.unwrap();
         // idempotent: second run must not fail with duplicate column
         store.create_tables_if_not_exist().await.unwrap();
+    }
+
+    fn write_set(stream_id: H256, key: &[u8]) -> (StreamWriteSet, AccessControlSet) {
+        (
+            StreamWriteSet {
+                stream_writes: vec![StreamWrite {
+                    stream_id,
+                    key: Arc::new(key.to_vec()),
+                    start_index: 0,
+                    end_index: 0,
+                }],
+            },
+            AccessControlSet {
+                access_controls: vec![],
+                is_admin: Default::default(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn timestamps_carry_created_forward() {
+        let store = StreamStore::new_in_memory().await.unwrap();
+        store.create_tables_if_not_exist().await.unwrap();
+        let sid = H256::repeat_byte(9);
+
+        // put_stream's replay-progress guard requires the first commit at this
+        // fresh db to use tx_seq 0 (seeded progress), so the sequence below
+        // starts at 0 rather than 1.
+        store
+            .put_stream(0, "Commit".into(), Some(write_set(sid, b"k")), Some(100))
+            .await
+            .unwrap();
+        store
+            .put_stream(1, "Commit".into(), Some(write_set(sid, b"k")), Some(200))
+            .await
+            .unwrap();
+        store
+            .put_stream(2, "Commit".into(), Some(write_set(sid, b"k")), None)
+            .await
+            .unwrap();
+
+        let rows: Vec<(u64, Option<i64>, Option<i64>)> = store
+            .connection
+            .call(
+                move |conn| -> rusqlite::Result<Vec<(u64, Option<i64>, Option<i64>)>> {
+                    let mut stmt = conn.prepare(
+                        "SELECT version, created_at, updated_at FROM t_stream ORDER BY version",
+                    )?;
+                    let rows = stmt
+                        .query_map([], |r| {
+                            let version: i64 = r.get(0)?;
+                            Ok((convert_to_u64(version), r.get(1)?, r.get(2)?))
+                        })?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    Ok(rows)
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(rows[0], (0, Some(100), Some(100)));
+        assert_eq!(rows[1], (1, Some(100), Some(200))); // created carried forward
+        assert_eq!(rows[2], (2, Some(100), None)); // no block time -> NULL updated_at
     }
 }

@@ -299,8 +299,9 @@ impl StreamWrite for StoreManager {
             }
         }
 
+        let block_time = self.data_store.get_tx_block_time(tx_seq).unwrap_or(None);
         self.stream_store
-            .put_stream(tx_seq, result, commit_data)
+            .put_stream(tx_seq, result, commit_data, block_time)
             .await
     }
 
