@@ -21,6 +21,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{oneshot, RwLock};
 
 const RETRY_WAIT_MS: u64 = 500;
+const BLOCK_TIME_CACHE_CAP: usize = 1024;
 
 // A RPC query can return at most 10000 entries.
 // Each tx has less than 10KB, so the cache size should be acceptable.
@@ -59,6 +60,10 @@ pub struct LogSyncManager {
     event_send: broadcast::Sender<LogSyncEvent>,
 
     block_hash_cache: Arc<RwLock<BTreeMap<u64, Option<BlockHashAndSubmissionIndex>>>>,
+
+    /// Bounded cache of block number -> block timestamp, to avoid re-fetching
+    /// the same block's timestamp from the RPC provider repeatedly.
+    block_time_cache: BTreeMap<u64, u64>,
 }
 
 impl LogSyncManager {
@@ -103,6 +108,7 @@ impl LogSyncManager {
                         store,
                         event_send,
                         block_hash_cache,
+                        block_time_cache: BTreeMap::new(),
                     };
 
                     let (mut start_block_number, mut start_block_hash) =
@@ -398,9 +404,12 @@ impl LogSyncManager {
                 }
                 LogFetchProgress::Transaction((tx, block_number)) => {
                     let mut stop = false;
+                    let tx_seq = tx.seq;
                     match self.put_tx(tx.clone()).await {
                         Some(false) => stop = true,
                         Some(true) => {
+                            self.store_block_time(tx_seq, block_number).await;
+
                             if let Err(e) = self
                                 .store
                                 .write()
@@ -454,6 +463,32 @@ impl LogSyncManager {
             metrics::STORE_PUT_TX.update_since(start_time);
 
             true
+        }
+    }
+
+    /// Best-effort persistence of the block time for a synced tx. Any failure
+    /// (RPC fetch or store write) degrades to a NULL timestamp, which a later
+    /// backfill process is responsible for filling in.
+    async fn store_block_time(&mut self, tx_seq: u64, block_number: u64) {
+        let ts = match self.block_time_cache.get(&block_number) {
+            Some(ts) => Some(*ts),
+            None => match self.log_fetcher.provider().get_block(block_number).await {
+                Ok(Some(b)) => {
+                    let ts = b.timestamp.as_u64();
+                    self.block_time_cache.insert(block_number, ts);
+                    trim_block_time_cache(&mut self.block_time_cache);
+                    Some(ts)
+                }
+                other => {
+                    warn!("block time fetch failed for {}: {:?}", block_number, other);
+                    None
+                }
+            },
+        };
+        if let Some(ts) = ts {
+            if let Err(e) = self.store.write().await.put_tx_block_time(tx_seq, ts) {
+                warn!("failed to persist tx block time: {:?}", e);
+            }
         }
     }
 
@@ -544,6 +579,13 @@ async fn get_start_block_number_with_hash(
     Ok((start_block_number, start_block_hash))
 }
 
+fn trim_block_time_cache(cache: &mut BTreeMap<u64, u64>) {
+    while cache.len() > BLOCK_TIME_CACHE_CAP {
+        let oldest = *cache.keys().next().unwrap();
+        cache.remove(&oldest);
+    }
+}
+
 async fn run_and_log<R, E>(
     mut on_error: impl FnMut(),
     f: impl Future<Output = std::result::Result<R, E>> + Send,
@@ -566,3 +608,18 @@ mod log_entry_fetcher;
 mod log_query;
 mod metrics;
 mod retry_policy;
+
+#[cfg(test)]
+mod block_time_cache_tests {
+    use super::trim_block_time_cache;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn trims_oldest_entries_beyond_cap() {
+        let mut cache: BTreeMap<u64, u64> = (0..1500u64).map(|i| (i, i)).collect();
+        trim_block_time_cache(&mut cache);
+        assert_eq!(cache.len(), 1024);
+        assert!(cache.contains_key(&1499));
+        assert!(!cache.contains_key(&0));
+    }
+}
