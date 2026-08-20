@@ -7,6 +7,7 @@ members = [
     "node/rpc",
     "node/kv_types",
     "node/storage_with_stream",
+    "node/kv_renew",
 ]
 resolver = "2"
 

@@ -1,0 +1,24 @@
+[package]
+name = "kv_renew"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { version = "1.0.58", features = ["backtrace"] }
+async-trait = "0.1.56"
+ethereum-types = "0.14"
+ethers = "^2"
+hex = "0.4.3"
+k256 = "0.13"
+kv_types = { path = "../kv_types" }
+serde = { version = "1.0.137", features = ["derive"] }
+serde_json = "1.0"
+storage_with_stream = { path = "../storage_with_stream" }
+task_executor = { workspace = true }
+tokio = { version = "1.19.2", features = ["sync", "time", "macros"] }
+tracing = "0.1.35"
+contract-interface = { workspace = true }
+zg-storage-client = { git = "https://github.com/0gfoundation/0g-storage-sdk-rust.git", rev = "660268e4db07f356d9d3169989d53a1f0d062308" }
+
+[dev-dependencies]
+tokio = { version = "1.19.2", features = ["rt", "macros"] }
