@@ -18,16 +18,6 @@ use crate::batch::ValueBatcher;
 /// reasonable SQLite page/row limit; tuned only for scan throughput.
 const PAGE_SIZE: u64 = 256;
 
-/// Default cycle length assumed by [`fill_batch`]'s in-scan backoff check
-/// when computing [`backoff_until`]'s retry window. `fill_batch`'s signature
-/// is frozen (Task 17 depends on it) and carries no live `cycle_secs` input,
-/// so this mirrors `RenewConfig::cycle_interval_secs`'s spec default
-/// (`renew_cycle_interval_secs = 604800`, spec §4/§7). A future task with the
-/// live configured value in scope can call [`backoff_until`] directly (it is
-/// a plain pure function) if a non-default cycle length needs to be honored
-/// here.
-const DEFAULT_CYCLE_SECS: u64 = 604_800;
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ScanCounters {
     pub scanned: u64,
@@ -43,7 +33,9 @@ pub struct ScanCounters {
 /// 1. Already uploaded earlier this cycle (`uploaded_this_cycle`) — skipped
 ///    silently, only `scanned` moves.
 /// 2. A prior renew attempt recorded `attempts >= max_attempts` and `now` is
-///    still inside its backoff window — `skipped_backoff` counts, no new
+///    still inside its backoff window (`backoff_until(attempts, last_ts,
+///    cycle_secs)`, where `cycle_secs` is the operator's configured
+///    `renew_cycle_interval_secs`) — `skipped_backoff` counts, no new
 ///    attempt is recorded (that would just re-arm the same window).
 /// 3. `signer` lacks write permission on the key (checked at `u64::MAX`) —
 ///    `skipped_permission` counts and the denial is recorded.
@@ -63,6 +55,7 @@ pub async fn fill_batch(
     signer: H160,
     uploaded_this_cycle: &HashSet<(H256, Vec<u8>)>,
     max_attempts: u64,
+    cycle_secs: u64,
     now: u64,
 ) -> Result<(ScanCounters, bool)> {
     let mut counters = ScanCounters::default();
@@ -90,12 +83,7 @@ pub async fn fill_batch(
                 .await?
             {
                 if attempt.attempts >= max_attempts
-                    && now
-                        < backoff_until(
-                            attempt.attempts,
-                            attempt.last_attempt_ts,
-                            DEFAULT_CYCLE_SECS,
-                        )
+                    && now < backoff_until(attempt.attempts, attempt.last_attempt_ts, cycle_secs)
                 {
                     counters.skipped_backoff += 1;
                     cursor.clone_from(&stale.key);
@@ -348,6 +336,7 @@ mod tests {
             signer,
             &HashSet::new(),
             3,
+            10,
             2_000,
         )
         .await
@@ -396,6 +385,7 @@ mod tests {
             signer,
             &HashSet::new(),
             3,
+            10,
             2_000,
         )
         .await
@@ -444,7 +434,8 @@ mod tests {
             signer,
             &HashSet::new(),
             3,
-            2_000, // well inside the backoff window
+            10,    // cycle_secs: backoff_until(3, 1_500, 10) == 1_580
+            1_550, // well inside the backoff window
         )
         .await
         .unwrap();
@@ -483,8 +474,9 @@ mod tests {
 
         let mut batcher = ValueBatcher::new(1 << 20, 100);
         let mut cursor = vec![];
-        // now far past 1_500 + DEFAULT_CYCLE_SECS << 3 (backoff window has elapsed).
-        let now = 1_500 + (DEFAULT_CYCLE_SECS << 3) + 1;
+        let cycle_secs = 10;
+        // now far past 1_500 + (cycle_secs << 3) (backoff window has elapsed).
+        let now = 1_500 + (cycle_secs << 3) + 1;
         let (counters, done) = fill_batch(
             &store,
             sid,
@@ -494,6 +486,7 @@ mod tests {
             signer,
             &HashSet::new(),
             3,
+            cycle_secs,
             now,
         )
         .await
@@ -528,6 +521,7 @@ mod tests {
             signer,
             &uploaded,
             3,
+            10,
             2_000,
         )
         .await
@@ -576,6 +570,7 @@ mod tests {
             signer,
             &HashSet::new(),
             3,
+            10,
             2_000,
         )
         .await
@@ -599,6 +594,7 @@ mod tests {
             signer,
             &HashSet::new(),
             3,
+            10,
             2_000,
         )
         .await
