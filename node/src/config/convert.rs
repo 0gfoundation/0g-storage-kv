@@ -69,6 +69,53 @@ impl ZgsKVConfig {
         })
     }
 
+    // Wired into the client's renew loop startup by a later task; unused for now.
+    #[allow(dead_code)]
+    pub fn renew_config(&self) -> Result<Option<kv_renew::RenewConfig>, String> {
+        let key_hex = std::env::var("ZGS_KV_RENEW_PRIVATE_KEY")
+            .unwrap_or_else(|_| self.renew_private_key.clone());
+        if !self.renew_enabled || key_hex.is_empty() {
+            return Ok(None);
+        }
+        let private_key = parse_32byte_hex(&key_hex, "renew_private_key")?;
+
+        let mut stream_ids = Vec::new();
+        for id in &self.renew_stream_ids {
+            stream_ids.push(
+                H256::from_str(id).map_err(|e| format!("bad renew_stream_id {}: {:?}", id, e))?,
+            );
+        }
+
+        let stream_cfg = self.stream_config()?; // reuse parsed encryption keys
+        Ok(Some(kv_renew::RenewConfig {
+            private_key,
+            max_age_secs: self.renew_max_age_secs,
+            cycle_interval_secs: self.renew_cycle_interval_secs,
+            batch_max_bytes: self.renew_batch_max_bytes,
+            batch_max_keys: self.renew_batch_max_keys,
+            pause_between_batches_ms: self.renew_pause_between_batches_ms,
+            startup_delay_secs: self.renew_startup_delay_secs,
+            expected_replica: self.renew_expected_replica,
+            stream_ids,
+            dry_run: self.renew_dry_run,
+            max_attempts: self.renew_max_attempts,
+            blockchain_rpc_endpoint: self.blockchain_rpc_endpoint.clone(),
+            log_contract_address: self.log_contract_address.clone(),
+            indexer_url: if self.indexer_url.is_empty() {
+                None
+            } else {
+                Some(self.indexer_url.clone())
+            },
+            zgs_node_urls: if self.zgs_node_urls.is_empty() {
+                Vec::new()
+            } else {
+                to_zgs_nodes(self.zgs_node_urls.clone())?
+            },
+            encryption_key: stream_cfg.encryption_key,
+            wallet_private_key: stream_cfg.wallet_private_key,
+        }))
+    }
+
     pub fn rpc_config(&self) -> Result<RPCConfig, String> {
         let listen_address = self
             .rpc_listen_address
@@ -168,4 +215,42 @@ pub fn to_zgs_nodes(zgs_node_urls: String) -> Result<Vec<String>, String> {
             Ok(url.to_owned())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod renew_config_tests {
+    use crate::config::RawConfiguration;
+    use crate::ZgsKVConfig;
+
+    fn cfg_with(key: &str) -> ZgsKVConfig {
+        let mut raw = RawConfiguration::default();
+        raw.renew_private_key = key.to_string();
+        raw.indexer_url = "http://indexer".to_string();
+        ZgsKVConfig { raw_conf: raw }
+    }
+
+    #[test]
+    fn no_key_means_disabled() {
+        assert!(cfg_with("").renew_config().unwrap().is_none());
+    }
+
+    #[test]
+    fn kill_switch_wins() {
+        let mut c = cfg_with(&"11".repeat(32));
+        c.raw_conf.renew_enabled = false;
+        assert!(c.renew_config().unwrap().is_none());
+    }
+
+    #[test]
+    fn key_enables_and_parses() {
+        let c = cfg_with(&"11".repeat(32));
+        let rc = c.renew_config().unwrap().unwrap();
+        assert_eq!(rc.private_key, [0x11u8; 32]);
+        assert_eq!(rc.max_age_secs, 15552000);
+    }
+
+    #[test]
+    fn bad_key_is_an_error() {
+        assert!(cfg_with("nothex").renew_config().is_err());
+    }
 }
