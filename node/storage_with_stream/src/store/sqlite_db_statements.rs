@@ -126,6 +126,27 @@ impl SqliteDBStatements {
     /// Groupwise-latest ACL snapshot statements (spec §5): each returns, per
     /// group key, only the row whose `version` is the max among the group's
     /// grant/revoke op_types — the caller keeps only the grant-variant rows.
+    ///
+    /// **Tie-handling invariant (fail-open if ever violated):** these queries
+    /// assume at most one row per (stream_id, group-key, op_type-category,
+    /// version) — i.e. within a single tx/version there is never more than
+    /// one row for the same account (admins/writers) or key
+    /// (special keys)/(key, account) (special writers) among a category's
+    /// grant/revoke/renounce op_types. If two rows ever tied on `version`
+    /// within a group, `version = (SELECT MAX(version) ...)` would let SQLite
+    /// return *both* rows non-deterministically instead of picking one
+    /// winner, and the Rust-side "keep only the grant-variant row" filter
+    /// would then either double-count a grant or (if the tied pair is one
+    /// grant + one revoke) leave the caller unable to tell which won —
+    /// silently breaking this security-sensitive query rather than erroring.
+    /// This holds today because the replayer dedups access-control ops per
+    /// tx by `(op_type & 0xf0, stream_id, key, account)` before writing, and
+    /// each category's non-grouped column is constant per row (e.g. the
+    /// admins/writers queries group by `account` and never vary `key`, so a
+    /// dedup key collision within a category can only occur for the exact
+    /// same group). A future replayer change that allows multiple
+    /// same-version rows per group (e.g. a batched multi-key op or relaxed
+    /// dedup) must revisit this — silently, not just here.
 
     pub const GET_EFFECTIVE_ADMINS_STATEMENT: &'static str = formatcp!(
         "

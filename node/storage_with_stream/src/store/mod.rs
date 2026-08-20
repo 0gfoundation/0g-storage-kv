@@ -219,9 +219,32 @@ pub trait StreamRead {
 
     /// The stream's current effective ACL snapshot (spec §5): groupwise-latest
     /// grant/revoke winner per admin, writer, special key, and special writer.
+    ///
+    /// **Ordering contract:** this call and [`Self::get_latest_access_control_seq`]
+    /// are each atomic individually, but *not* jointly atomic — an access-control
+    /// op can be replayed in between the two calls. A caller that needs a
+    /// consistent `(snapshot, seq)` pair (e.g. to later re-check the exclusive
+    /// range `(seq, S)` for races) must do ONE of:
+    /// - read [`Self::get_stream_replay_progress`] under the same store guard as
+    ///   this snapshot call (replay is sequential, so every op with
+    ///   `version <= progress` is already reflected in the snapshot), or
+    /// - read [`Self::get_latest_access_control_seq`] **before** calling this
+    ///   method, never after.
+    ///
+    /// Reversing that order (snapshot first, then seq) can miss a racing
+    /// revoke: an op lands after the snapshot is read but before/at the seq
+    /// read, so the seq advances past it while the snapshot still shows the
+    /// old (now-revoked) grant — silent role resurrection once a later
+    /// exclusive re-check window starts strictly after that seq.
     async fn get_effective_access_control(&self, stream_id: H256) -> Result<EffectiveAcl>;
 
     /// Highest `t_access_control` version recorded for the stream, or 0 when none.
+    ///
+    /// **Ordering contract:** see [`Self::get_effective_access_control`] — this
+    /// call is not jointly atomic with the snapshot call. Read this seq
+    /// *before* the snapshot (or fence both under one
+    /// [`Self::get_stream_replay_progress`] read) rather than after, or a
+    /// racing revoke landing between the two calls can be missed.
     async fn get_latest_access_control_seq(&self, stream_id: H256) -> Result<u64>;
 
     /// Access-control ops with `after < version < before`, ascending (both bounds exclusive).
