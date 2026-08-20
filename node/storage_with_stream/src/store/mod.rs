@@ -9,6 +9,7 @@ use shared_types::ChunkArray;
 
 use shared_types::FlowProof;
 
+use storage::log_store::log_manager::ENTRY_SIZE;
 use storage::log_store::tx_store::BlockHashAndSubmissionIndex;
 
 use crate::error::Result;
@@ -76,6 +77,24 @@ pub trait Store:
 impl<T: DataStoreRead + DataStoreWrite + Send + Sync + StreamRead + StreamWrite + 'static> Store
     for T
 {
+}
+
+/// Read the full value bytes for a KV pair out of the local flow store.
+/// Ok(None) = data missing locally (tx never downloaded).
+pub fn read_pair_value(store: &dyn Store, pair: &KeyValuePair) -> Result<Option<Vec<u8>>> {
+    if pair.end_index == pair.start_index {
+        return Ok(Some(vec![]));
+    }
+    let start_entry = pair.start_index / ENTRY_SIZE as u64;
+    let end_entry = (pair.end_index + ENTRY_SIZE as u64 - 1) / ENTRY_SIZE as u64;
+    match store.get_chunk_by_flow_index(start_entry, end_entry - start_entry)? {
+        Some(chunks) => {
+            let off = (pair.start_index - start_entry * ENTRY_SIZE as u64) as usize;
+            let len = (pair.end_index - pair.start_index) as usize;
+            Ok(Some(chunks.data[off..off + len].to_vec()))
+        }
+        None => Ok(None),
+    }
 }
 
 #[async_trait]
@@ -209,4 +228,69 @@ pub trait StreamWrite {
     ) -> Result<()>;
 
     async fn clear_renew_attempt(&self, stream_id: H256, key: Vec<u8>) -> Result<()>;
+}
+
+#[cfg(test)]
+mod read_pair_value_tests {
+    use super::*;
+    use crate::store::store_manager::StoreManager;
+
+    fn make_tx(seq: u64, start_entry_index: u64, size: u64) -> KVTransaction {
+        KVTransaction {
+            stream_ids: vec![],
+            sender: H160::zero(),
+            data_merkle_root: H256::zero(),
+            merkle_nodes: vec![(1, H256::zero())],
+            start_entry_index,
+            size,
+            seq,
+        }
+    }
+
+    #[tokio::test]
+    async fn read_pair_value_roundtrip_and_missing() {
+        let mut store = StoreManager::memorydb().await.unwrap();
+        // One entry (256 bytes) of 0xAB seeded at flow index 1 (flow index 0
+        // is reserved, see FlowStore::get_entries's batch-0 offset fixup).
+        let tx = make_tx(0, 1, ENTRY_SIZE as u64);
+        store.put_tx(tx.clone()).unwrap();
+        let data = vec![0xABu8; ENTRY_SIZE];
+        store
+            .put_chunks_with_tx_hash(
+                0,
+                tx.hash(),
+                ChunkArray {
+                    data,
+                    start_index: 0,
+                },
+                None,
+            )
+            .unwrap();
+
+        let base = ENTRY_SIZE as u64; // absolute byte offset of entry 1
+        let pair = KeyValuePair {
+            stream_id: H256::zero(),
+            key: b"k".to_vec(),
+            start_index: base + 3,
+            end_index: base + 10,
+            version: 0,
+        };
+        assert_eq!(read_pair_value(&store, &pair).unwrap(), Some(vec![0xAB; 7]));
+
+        let missing = KeyValuePair {
+            stream_id: H256::zero(),
+            key: b"k".to_vec(),
+            start_index: 10_000_000,
+            end_index: 10_000_005,
+            version: 0,
+        };
+        assert_eq!(read_pair_value(&store, &missing).unwrap(), None);
+
+        let empty = KeyValuePair {
+            start_index: 5,
+            end_index: 5,
+            ..pair
+        };
+        assert_eq!(read_pair_value(&store, &empty).unwrap(), Some(vec![]));
+    }
 }
