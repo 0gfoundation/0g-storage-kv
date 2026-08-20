@@ -2,6 +2,7 @@
 #[macro_use]
 extern crate tracing;
 
+pub mod acl;
 pub mod batch;
 pub mod clock;
 pub mod probe;
