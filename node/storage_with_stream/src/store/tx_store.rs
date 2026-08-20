@@ -11,7 +11,7 @@ use storage::log_store::tx_store::BlockHashAndSubmissionIndex;
 use storage::ZgsKeyValueDB;
 use tracing::{error, instrument};
 
-use super::data_store::{COL_BLOCK_PROGRESS, COL_MISC, COL_TX, COL_TX_COMPLETED};
+use super::data_store::{COL_BLOCK_PROGRESS, COL_MISC, COL_TX, COL_TX_COMPLETED, COL_TX_TIME};
 
 const LOG_SYNC_PROGRESS_KEY: &str = "log_sync_progress";
 const NEXT_TX_KEY: &str = "next_tx_seq";
@@ -94,6 +94,7 @@ impl TransactionStore {
             };
             db_tx.delete(COL_TX, &seq.to_be_bytes());
             db_tx.delete(COL_TX_COMPLETED, &seq.to_be_bytes());
+            db_tx.delete(COL_TX_TIME, &seq.to_be_bytes());
             removed_txs.push(tx);
         }
         db_tx.put(COL_TX, NEXT_TX_KEY.as_bytes(), &min_seq.to_be_bytes());
@@ -217,6 +218,19 @@ impl TransactionStore {
             .kvdb
             .delete(COL_BLOCK_PROGRESS, &block_number.to_be_bytes())?)
     }
+
+    pub fn put_block_time(&self, tx_seq: u64, ts: u64) -> Result<()> {
+        Ok(self
+            .kvdb
+            .put(COL_TX_TIME, &tx_seq.to_be_bytes(), &ts.to_be_bytes())?)
+    }
+
+    pub fn get_block_time(&self, tx_seq: u64) -> Result<Option<u64>> {
+        self.kvdb
+            .get(COL_TX_TIME, &tx_seq.to_be_bytes())?
+            .map(|d| decode_tx_seq(&d))
+            .transpose()
+    }
 }
 
 fn decode_tx_seq(data: &[u8]) -> Result<u64> {
@@ -228,10 +242,44 @@ fn decode_tx_seq(data: &[u8]) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethereum_types::H160;
 
     fn create_test_store() -> TransactionStore {
         let db = Arc::new(kvdb_memorydb::create(super::super::data_store::COL_NUM));
         TransactionStore::new(db).unwrap()
+    }
+
+    fn make_tx(seq: u64) -> KVTransaction {
+        KVTransaction {
+            stream_ids: vec![],
+            sender: H160::zero(),
+            data_merkle_root: H256::zero(),
+            merkle_nodes: vec![(1, H256::zero())],
+            start_entry_index: 0,
+            size: 0,
+            seq,
+        }
+    }
+
+    #[test]
+    fn block_time_roundtrip_and_missing() {
+        let store = create_test_store();
+        assert_eq!(store.get_block_time(7).unwrap(), None);
+        store.put_block_time(7, 1_755_000_000).unwrap();
+        assert_eq!(store.get_block_time(7).unwrap(), Some(1_755_000_000));
+    }
+
+    #[test]
+    fn revert_deletes_block_time() {
+        let store = create_test_store();
+        // seed txs 0..2 so remove_tx_after walks them
+        for seq in 0..2u64 {
+            store.put_tx(make_tx(seq)).unwrap();
+            store.put_block_time(seq, 100 + seq).unwrap();
+        }
+        store.remove_tx_after(1).unwrap();
+        assert_eq!(store.get_block_time(0).unwrap(), Some(100));
+        assert_eq!(store.get_block_time(1).unwrap(), None);
     }
 
     #[test]
