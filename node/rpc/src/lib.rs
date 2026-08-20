@@ -60,6 +60,8 @@ pub async fn run_server(ctx: Context) -> Result<(HttpServerHandle, SocketAddr), 
             store: ctx.store.clone(),
             live_stream_set: ctx.live_stream_set.clone(),
             chain_id: ctx.chain_id,
+            renew_trigger: ctx.renew_trigger.clone(),
+            renew_signer: ctx.renew_signer,
         })
         .into_rpc(),
     )?;
