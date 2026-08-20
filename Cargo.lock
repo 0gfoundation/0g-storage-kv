@@ -3883,6 +3883,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "kv_renew"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "contract-interface",
+ "ethereum-types 0.14.1",
+ "ethers",
+ "hex",
+ "k256 0.13.3",
+ "kv_types",
+ "serde",
+ "serde_json",
+ "storage_with_stream",
+ "task_executor",
+ "tokio",
+ "tracing",
+ "zg-storage-client",
+]
+
+[[package]]
 name = "kv_types"
 version = "0.1.0"
 dependencies = [
