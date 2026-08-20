@@ -220,13 +220,16 @@ impl SqliteDBStatements {
             version INTEGER NOT NULL,
             start_index INTEGER NOT NULL,
             end_index INTEGER NOT NULL,
+            created_at INTEGER,
+            updated_at INTEGER,
             PRIMARY KEY (stream_id, key, version)
         ) WITHOUT ROWID
     ";
 
-    pub const CREATE_STREAM_INDEX_STATEMENTS: [&'static str; 2] = [
+    pub const CREATE_STREAM_INDEX_STATEMENTS: [&'static str; 3] = [
         "CREATE INDEX IF NOT EXISTS stream_key_idx ON t_stream(stream_id, key)",
         "CREATE INDEX IF NOT EXISTS stream_version_idx ON t_stream(version)",
+        "CREATE INDEX IF NOT EXISTS stream_updated_idx ON t_stream(updated_at)",
     ];
 
     pub const CREATE_ACCESS_CONTROL_TABLE_STATEMENT: &'static str = "
@@ -236,7 +239,9 @@ impl SqliteDBStatements {
             version INTEGER NOT NULL,
             account BLOB,
             op_type INTEGER NOT NULL,
-            operator BLOB NOT NULL
+            operator BLOB NOT NULL,
+            created_at INTEGER,
+            updated_at INTEGER
         )
     ";
 
