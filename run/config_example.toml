@@ -139,6 +139,35 @@ zgs_node_urls = ""
 # retry_wait_ms = 1000
 
 #######################################################################
+###                 Data Lifetime Renewal Options                   ###
+#######################################################################
+
+# The KV node can renew the storage lifetime of aging values by re-uploading
+# them. Renewal runs when renew_private_key is set (and renew_enabled is not
+# turned off). The key MUST be the stream admin's key and pays real fees.
+# Prefer the ZGS_KV_RENEW_PRIVATE_KEY environment variable over this file.
+#
+# IMPORTANT: do not perform role-change operations (grants, revokes,
+# renounces, special-key flips) while a renewal cycle is running — they may
+# be silently overridden by the renewal snapshot. Check
+# kv_getRenewStatus.aclRenewalInProgress first. If a change lands during the
+# window anyway, the node logs an ERROR and reports it in kv_getRenewStatus;
+# re-issue the change manually.
+
+# renew_enabled = true
+# renew_private_key = ""
+# renew_max_age_secs = 15552000        # 180 days
+# renew_cycle_interval_secs = 604800   # 7 days
+# renew_batch_max_bytes = 8388608
+# renew_batch_max_keys = 1000
+# renew_pause_between_batches_ms = 2000
+# renew_startup_delay_secs = 300
+# renew_expected_replica = 1
+# renew_stream_ids = []                # empty = every monitored stream
+# renew_dry_run = false                # scan and log, submit nothing
+# renew_max_attempts = 3
+
+#######################################################################
 ###                     Misc Config Options                         ###
 #######################################################################
 
