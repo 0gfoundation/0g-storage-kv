@@ -46,21 +46,65 @@ pub fn emit_acl_ops(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zg_storage_client::kv::types::AccessControlType;
 
+    // The signer sits in *every* category (admins, writers, special_writers),
+    // not just admins — a regression that also (incorrectly) filtered the
+    // signer out of writers/special_writers would stay green against a
+    // signer-in-admins-only fixture. Only the signer's own ADMIN grant is
+    // meant to be skipped; its writer and special-writer grants must still
+    // be emitted like anyone else's.
     #[test]
-    fn emit_skips_signer_self_grant() {
+    fn emit_skips_only_signers_admin_grant() {
         let sid = H256::repeat_byte(4);
         let signer = H160::repeat_byte(1);
         let other = H160::repeat_byte(2);
         let acl = EffectiveAcl {
             admins: vec![signer, other],
-            writers: vec![other],
+            writers: vec![signer, other],
             special_keys: vec![b"s".to_vec()],
-            special_writers: vec![(b"s".to_vec(), other)],
+            special_writers: vec![(b"s".to_vec(), signer), (b"s".to_vec(), other)],
         };
         let mut b = StreamDataBuilder::new(u64::MAX);
         let n = emit_acl_ops(&mut b, sid, &acl, signer);
-        assert_eq!(n, 4); // other-admin grant, writer grant, special key, special writer — NOT signer's own admin
-        assert_eq!(b.build(None).unwrap().controls.len(), 4);
+        // other's admin grant (1) + both writer grants (2) + special key (1)
+        // + both special-writer grants (2) = 6; only signer's own admin
+        // grant is skipped.
+        assert_eq!(n, 6);
+        let controls = b.build(None).unwrap().controls;
+        assert_eq!(controls.len(), 6);
+
+        let signer_addr = Address::from_slice(signer.as_bytes());
+        let count = |control_type_matches: fn(&AccessControlType) -> bool, account: Address| {
+            controls
+                .iter()
+                .filter(|c| control_type_matches(&c.control_type) && c.account == Some(account))
+                .count()
+        };
+
+        assert_eq!(
+            count(
+                |t| matches!(t, AccessControlType::GrantAdminRole),
+                signer_addr
+            ),
+            0,
+            "signer's own admin grant must be skipped"
+        );
+        assert_eq!(
+            count(
+                |t| matches!(t, AccessControlType::GrantWriteRole),
+                signer_addr
+            ),
+            1,
+            "signer's writer grant must still be emitted"
+        );
+        assert_eq!(
+            count(
+                |t| matches!(t, AccessControlType::GrantSpecialWriteRole),
+                signer_addr
+            ),
+            1,
+            "signer's special-writer grant must still be emitted"
+        );
     }
 }
