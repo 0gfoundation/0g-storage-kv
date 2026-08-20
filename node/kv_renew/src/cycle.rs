@@ -2,6 +2,7 @@
 //! none remain) and verifies a renewal landed via replay. See spec §4 steps
 //! 5-8.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +10,10 @@ use anyhow::Result;
 use ethereum_types::{H160, H256};
 use storage_with_stream::Store;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 
+use crate::batch::{into_upload_data, ValueBatcher};
+use crate::scan::fill_batch;
 use crate::upload::BatchSink;
 use crate::{RenewConfig, SharedRenewStatus};
 
@@ -38,9 +42,100 @@ pub async fn drain_stream(
     cutoff: u64,
     now: u64,
 ) -> Result<(Vec<(H256, Vec<u8>)>, u64)> {
-    // TODO(step 3): scan -> pack -> upload loop.
-    let _ = (deps, stream_id, cutoff, now);
-    Ok((Vec::new(), 0))
+    let pre_seq = deps.store.read().await.next_tx_seq();
+    let mut uploaded_this_cycle: HashSet<(H256, Vec<u8>)> = HashSet::new();
+    let mut uploaded_keys: Vec<(H256, Vec<u8>)> = Vec::new();
+    let mut cursor: Vec<u8> = Vec::new();
+
+    loop {
+        let mut batcher =
+            ValueBatcher::new(deps.config.batch_max_bytes, deps.config.batch_max_keys);
+
+        // `fill_batch` already pages internally until either the batcher
+        // gets content or the stream is exhausted, so a single call per
+        // drain-loop iteration is enough here.
+        let (counters, exhausted) = fill_batch(
+            &deps.store,
+            stream_id,
+            cutoff,
+            &mut cursor,
+            &mut batcher,
+            deps.signer,
+            &uploaded_this_cycle,
+            deps.config.max_attempts,
+            deps.config.cycle_interval_secs,
+            now,
+        )
+        .await?;
+
+        {
+            let mut status = deps.status.write().await;
+            // NOTE: `counters.scanned` can double-count a key that sits
+            // exactly on a batch-full boundary: `fill_batch` counts it once
+            // when the full batch rejects it, then again when the next call
+            // re-scans from the cursor and re-encounters it as the lead
+            // item. Acceptable per Task 16 — this is an approximate
+            // progress counter, not an exact audit trail.
+            status.keys_scanned += counters.scanned;
+            status.keys_skipped_permission += counters.skipped_permission;
+            status.keys_skipped_missing += counters.skipped_missing;
+            // `counters.skipped_backoff` has no dedicated `RenewStatus`
+            // field to land in; it's tracked internally by the scanner only.
+        }
+
+        if batcher.is_empty() && exhausted {
+            break;
+        }
+
+        let built = batcher.finish()?;
+        let bytes = built.bytes as u64;
+        let data = into_upload_data(
+            built.encoded,
+            deps.config.encryption_key,
+            deps.config.wallet_private_key,
+        )?;
+
+        if deps.config.dry_run {
+            info!(
+                "renew dry-run: would upload {} keys / {} bytes for stream {:?}",
+                built.keys.len(),
+                built.bytes,
+                stream_id
+            );
+            {
+                let mut status = deps.status.write().await;
+                status.bytes_uploaded += bytes;
+            }
+            // Dry-run never marks anything uploaded, so a second pass would
+            // just re-scan the same stale keys forever: stop after this one
+            // pack attempt regardless of `exhausted`.
+            break;
+        }
+
+        let root = deps.sink.submit(data, built.tags).await?;
+        for (key_stream_id, key) in &built.keys {
+            deps.store
+                .write()
+                .await
+                .record_renew_attempt(*key_stream_id, key.clone(), now, Some(root), None)
+                .await?;
+            uploaded_this_cycle.insert((*key_stream_id, key.clone()));
+        }
+        uploaded_keys.extend(built.keys);
+
+        {
+            let mut status = deps.status.write().await;
+            status.bytes_uploaded += bytes;
+        }
+
+        tokio::time::sleep(Duration::from_millis(deps.config.pause_between_batches_ms)).await;
+
+        if exhausted {
+            break;
+        }
+    }
+
+    Ok((uploaded_keys, pre_seq))
 }
 
 /// A key is verified renewed when its latest version now exceeds `pre_seq`.
@@ -52,9 +147,40 @@ pub async fn verify_renewed(
     pre_seq: u64,
     now: u64,
 ) -> Result<u64> {
-    // TODO(step 3): compare latest version against pre_seq per key.
-    let _ = (store, keys, pre_seq, now);
-    Ok(0)
+    let mut renewed = 0;
+    for (stream_id, key) in keys {
+        let latest = store
+            .read()
+            .await
+            .get_latest_version_before(*stream_id, Arc::new(key.clone()), u64::MAX)
+            .await?;
+        if latest > pre_seq {
+            store
+                .write()
+                .await
+                .clear_renew_attempt(*stream_id, key.clone())
+                .await?;
+            renewed += 1;
+        } else {
+            store
+                .write()
+                .await
+                .record_renew_attempt(
+                    *stream_id,
+                    key.clone(),
+                    now,
+                    None,
+                    Some("replayed but version did not advance (write rejected?)".into()),
+                )
+                .await?;
+            warn!(
+                "renewal for stream {:?} key 0x{} did not take effect",
+                stream_id,
+                hex::encode(key)
+            );
+        }
+    }
+    Ok(renewed)
 }
 
 /// Polls replay progress until it reaches `target_seq` or `timeout` elapses.
@@ -65,9 +191,18 @@ pub async fn wait_replay(
     timeout: Duration,
     poll: Duration,
 ) -> bool {
-    // TODO(step 3): poll get_stream_replay_progress until target_seq or timeout.
-    let _ = (store, target_seq, timeout, poll);
-    false
+    let deadline = Instant::now() + timeout;
+    loop {
+        match store.read().await.get_stream_replay_progress().await {
+            Ok(progress) if progress >= target_seq => return true,
+            Ok(_) => {}
+            Err(e) => warn!("wait_replay: get_stream_replay_progress error: {}", e),
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(poll).await;
+    }
 }
 
 #[cfg(test)]
