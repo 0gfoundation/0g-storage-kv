@@ -2,5 +2,6 @@
 #[macro_use]
 extern crate tracing;
 
+pub mod clock;
 pub mod types;
 pub use types::*;
