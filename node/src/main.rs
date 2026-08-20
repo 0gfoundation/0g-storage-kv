@@ -15,6 +15,18 @@ async fn start_node(context: RuntimeContext, config: ZgsKVConfig) -> Result<Clie
     let rpc_config = config.rpc_config()?;
     let log_sync_config = config.log_sync_config()?;
     let stream_config = config.stream_config()?;
+    let renew_config = config.renew_config()?;
+
+    // Built before `with_rpc` (spec §8) so the RPC context always has a
+    // status cell to read from and a trigger channel to send into, whether
+    // or not the renewal service ends up running.
+    let renew_status: kv_renew::SharedRenewStatus = Default::default();
+    let (renew_trigger_tx, renew_trigger_rx) = tokio::sync::mpsc::unbounded_channel();
+    let renew_signer = renew_config
+        .as_ref()
+        .map(|c| kv_renew::service::signer_address(&c.private_key))
+        .transpose()
+        .map_err(|e| format!("bad renew_private_key: {:?}", e))?;
 
     ClientBuilder::default()
         .with_runtime_context(context)
@@ -22,11 +34,24 @@ async fn start_node(context: RuntimeContext, config: ZgsKVConfig) -> Result<Clie
         .await?
         .merge_streams(&stream_config)
         .await?
-        .with_rpc(rpc_config, stream_config.stream_set.clone())
+        .with_rpc(
+            rpc_config,
+            stream_config.stream_set.clone(),
+            renew_status.clone(),
+            renew_config.as_ref().map(|_| renew_trigger_tx.clone()),
+            renew_signer,
+        )
         .await?
         .with_stream(&stream_config)
         .await?
         .with_log_sync(log_sync_config)
+        .await?
+        .with_renew(
+            renew_config,
+            stream_config.stream_set.clone(),
+            renew_status,
+            renew_trigger_rx,
+        )
         .await?
         .build()
 }

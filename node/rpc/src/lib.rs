@@ -8,7 +8,7 @@ mod kv_rpc_server;
 pub mod types;
 
 use admin_rpc_server::AdminRpcServer;
-use ethereum_types::H256;
+use ethereum_types::{H160, H256};
 use futures::channel::mpsc::Sender;
 pub use jsonrpsee::http_client::HttpClient;
 use jsonrpsee::http_client::HttpClientBuilder;
@@ -37,6 +37,9 @@ pub struct Context {
     pub store: Arc<RwLock<dyn Store>>,
     pub live_stream_set: Arc<RwLock<HashSet<H256>>>,
     pub chain_id: u64,
+    pub renew_status: kv_renew::SharedRenewStatus,
+    pub renew_trigger: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    pub renew_signer: Option<H160>,
 }
 
 pub fn build_client(url: &String, timeout: u64) -> Result<HttpClient, Box<dyn Error>> {

@@ -72,6 +72,9 @@ async fn add_stream_then_visible_via_get_holding_stream_ids() {
         store: store.clone(),
         live_stream_set: live_stream_set.clone(),
         chain_id: CHAIN_ID,
+        renew_status: Default::default(),
+        renew_trigger: None,
+        renew_signer: None,
     };
     let (handle, addr) = run_server(ctx).await.unwrap();
     let url = format!("http://{}", addr);
@@ -127,6 +130,9 @@ async fn add_stream_rejects_invalid_signature_over_the_wire() {
         store: store.clone(),
         live_stream_set: live_stream_set.clone(),
         chain_id: CHAIN_ID,
+        renew_status: Default::default(),
+        renew_trigger: None,
+        renew_signer: None,
     };
     let (handle, addr) = run_server(ctx).await.unwrap();
     let url = format!("http://{}", addr);
