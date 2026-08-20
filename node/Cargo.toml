@@ -14,6 +14,7 @@ exit-future = "0.2.0"
 futures = "0.3.21"
 log_entry_sync = { path = "./log_entry_sync" }
 rpc = { path = "./rpc" }
+kv_renew = { path = "./kv_renew" }
 kv_types = { path = "./kv_types" }
 storage_with_stream = { path = "./storage_with_stream" }
 stream = { path = "./stream" }
