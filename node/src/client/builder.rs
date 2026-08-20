@@ -1,5 +1,5 @@
 use super::{Client, RuntimeContext};
-use ethereum_types::H256;
+use ethereum_types::{H160, H256};
 use log_entry_sync::{LogSyncConfig, LogSyncEvent, LogSyncManager};
 use rpc::RPCConfig;
 use std::collections::HashSet;
@@ -86,10 +86,14 @@ impl ClientBuilder {
         Ok(self)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn with_rpc(
         mut self,
         rpc_config: RPCConfig,
         live_stream_set: Arc<RwLock<HashSet<H256>>>,
+        renew_status: kv_renew::SharedRenewStatus,
+        renew_trigger: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+        renew_signer: Option<H160>,
     ) -> Result<Self, String> {
         self.indexer_url.clone_from(&rpc_config.indexer_url);
         self.zgs_nodes = Some(rpc_config.zgs_nodes.clone());
@@ -109,6 +113,9 @@ impl ClientBuilder {
             store,
             live_stream_set,
             chain_id,
+            renew_status,
+            renew_trigger,
+            renew_signer,
         };
 
         let (rpc_handle, _addr) = rpc::run_server(ctx)
@@ -151,11 +158,66 @@ impl ClientBuilder {
         Ok(self)
     }
 
+    /// Spawns the kv renewal service (spec §4, §8) when `config` is present.
+    /// A no-op (just an info log) when renewal is disabled -- callers still
+    /// pass `status`/`trigger_rx` unconditionally so the RPC context (wired
+    /// up by `with_rpc`, which runs earlier) always has somewhere to read
+    /// status from and send triggers to, whether or not the service is
+    /// actually running.
+    pub async fn with_renew(
+        self,
+        config: Option<kv_renew::RenewConfig>,
+        live_stream_set: Arc<RwLock<HashSet<H256>>>,
+        status: kv_renew::SharedRenewStatus,
+        trigger_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    ) -> Result<Self, String> {
+        let Some(config) = config else {
+            info!("renewal disabled");
+            return Ok(self);
+        };
+
+        let executor = require!("renew", self, runtime_context).clone().executor;
+        let store = require!("renew", self, store).clone();
+
+        kv_renew::service::spawn_renewer(
+            executor,
+            store,
+            live_stream_set,
+            config,
+            status,
+            trigger_rx,
+        );
+
+        Ok(self)
+    }
+
     /// Consumes the builder, returning a `Client` if all necessary components have been
     /// specified.
     pub fn build(self) -> Result<Client, String> {
         require!("client", self, runtime_context);
 
         Ok(Client {})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `with_renew(None, ...)` must be a pure no-op: it neither requires
+    /// `runtime_context`/`store` to be set (a bare `Default::default()`
+    /// builder has neither) nor spawns anything. If it ever tried to spawn
+    /// on the `None` path, the `require!` calls above would turn the missing
+    /// fields into an `Err` here.
+    #[tokio::test]
+    async fn with_renew_none_is_noop() {
+        let builder = ClientBuilder::default();
+        let live_stream_set = Arc::new(RwLock::new(HashSet::new()));
+        let status: kv_renew::SharedRenewStatus = Default::default();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let result = builder.with_renew(None, live_stream_set, status, rx).await;
+
+        assert!(result.is_ok());
     }
 }

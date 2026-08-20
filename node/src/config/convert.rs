@@ -69,8 +69,6 @@ impl ZgsKVConfig {
         })
     }
 
-    // Wired into the client's renew loop startup by a later task; unused for now.
-    #[allow(dead_code)]
     pub fn renew_config(&self) -> Result<Option<kv_renew::RenewConfig>, String> {
         let key_hex = std::env::var("ZGS_KV_RENEW_PRIVATE_KEY")
             .unwrap_or_else(|_| self.renew_private_key.clone());

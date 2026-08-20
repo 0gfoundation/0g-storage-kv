@@ -6743,6 +6743,7 @@ dependencies = [
  "futures",
  "futures-channel",
  "jsonrpsee",
+ "kv_renew",
  "kv_types",
  "merkle_light",
  "merkle_tree",
