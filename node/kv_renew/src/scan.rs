@@ -65,26 +65,149 @@ pub async fn fill_batch(
     max_attempts: u64,
     now: u64,
 ) -> Result<(ScanCounters, bool)> {
-    // TODO(step 3): scan pages, apply the four skip rules, feed the batcher.
-    let _ = (
-        &store,
-        stream_id,
-        cutoff,
-        &cursor,
-        &batcher,
-        signer,
-        uploaded_this_cycle,
-        max_attempts,
-        now,
-    );
-    Ok((ScanCounters::default(), true))
+    let mut counters = ScanCounters::default();
+
+    loop {
+        let page = store
+            .read()
+            .await
+            .get_stale_stream_keys(stream_id, cutoff, cursor.clone(), PAGE_SIZE)
+            .await?;
+        let page_len = page.len() as u64;
+
+        for stale in page {
+            counters.scanned += 1;
+
+            if uploaded_this_cycle.contains(&(stream_id, stale.key.clone())) {
+                cursor.clone_from(&stale.key);
+                continue;
+            }
+
+            if let Some(attempt) = store
+                .read()
+                .await
+                .get_renew_attempt(stream_id, stale.key.clone())
+                .await?
+            {
+                if attempt.attempts >= max_attempts
+                    && now
+                        < backoff_until(
+                            attempt.attempts,
+                            attempt.last_attempt_ts,
+                            DEFAULT_CYCLE_SECS,
+                        )
+                {
+                    counters.skipped_backoff += 1;
+                    cursor.clone_from(&stale.key);
+                    continue;
+                }
+            }
+
+            let key_arc = Arc::new(stale.key.clone());
+            let allowed = store
+                .read()
+                .await
+                .has_write_permission(signer, stream_id, key_arc, u64::MAX)
+                .await?;
+            if !allowed {
+                warn!(
+                    "renew: no write permission for stream {:?} key 0x{}",
+                    stream_id,
+                    hex::encode(&stale.key)
+                );
+                store
+                    .write()
+                    .await
+                    .record_renew_attempt(
+                        stream_id,
+                        stale.key.clone(),
+                        now,
+                        None,
+                        Some("no write permission".into()),
+                    )
+                    .await?;
+                counters.skipped_permission += 1;
+                cursor.clone_from(&stale.key);
+                continue;
+            }
+
+            let pair = KeyValuePair {
+                stream_id,
+                key: stale.key.clone(),
+                start_index: stale.start_index,
+                end_index: stale.end_index,
+                version: stale.version,
+            };
+            let read_result = {
+                let guard = store.read().await;
+                read_pair_value(&*guard, &pair)
+            };
+            let value = match read_result {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    warn!(
+                        "renew: value missing locally for stream {:?} key 0x{}",
+                        stream_id,
+                        hex::encode(&stale.key)
+                    );
+                    store
+                        .write()
+                        .await
+                        .record_renew_attempt(
+                            stream_id,
+                            stale.key.clone(),
+                            now,
+                            None,
+                            Some("value missing locally".into()),
+                        )
+                        .await?;
+                    counters.skipped_missing += 1;
+                    cursor.clone_from(&stale.key);
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        "renew: value read error for stream {:?} key 0x{}: {}",
+                        stream_id,
+                        hex::encode(&stale.key),
+                        e
+                    );
+                    store
+                        .write()
+                        .await
+                        .record_renew_attempt(
+                            stream_id,
+                            stale.key.clone(),
+                            now,
+                            None,
+                            Some(e.to_string()),
+                        )
+                        .await?;
+                    counters.skipped_missing += 1;
+                    cursor.clone_from(&stale.key);
+                    continue;
+                }
+            };
+
+            if !batcher.push(stream_id, stale.key.clone(), value) {
+                // Batch full: leave cursor before this key so the next
+                // fill_batch call re-scans it as the lead item.
+                return Ok((counters, false));
+            }
+            cursor.clone_from(&stale.key);
+        }
+
+        if page_len < PAGE_SIZE {
+            return Ok((counters, true));
+        }
+    }
 }
 
 /// Exponential backoff deadline for a key stuck past `max_attempts`:
 /// `last_ts + cycle_secs << min(attempts, 4)` (capped at a 16x multiplier).
-pub fn backoff_until(_attempts: u64, _last_ts: u64, _cycle_secs: u64) -> u64 {
-    // TODO(step 3): last_ts + cycle_secs << min(attempts, 4)
-    0
+pub fn backoff_until(attempts: u64, last_ts: u64, cycle_secs: u64) -> u64 {
+    let shift = attempts.min(4);
+    last_ts + (cycle_secs << shift)
 }
 
 #[cfg(test)]
