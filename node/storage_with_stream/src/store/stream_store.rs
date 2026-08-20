@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use ethereum_types::{H160, H256};
-use kv_types::{AccessControlSet, KeyValuePair, StreamWriteSet};
+use kv_types::{AccessControlSet, KeyValuePair, StaleKey, StreamWriteSet};
 use ssz::{Decode, Encode};
 use std::{path::Path, sync::Arc};
 
@@ -677,6 +677,40 @@ impl StreamStore {
             .await
     }
 
+    pub async fn get_stale_stream_keys(
+        &self,
+        stream_id: H256,
+        cutoff: u64,
+        cursor: Vec<u8>,
+        limit: u64,
+    ) -> Result<Vec<StaleKey>> {
+        self.connection
+            .call(move |conn| {
+                let mut stmt = conn.prepare(SqliteDBStatements::GET_STALE_STREAM_KEYS_STATEMENT)?;
+                let rows = stmt.query_map(
+                    named_params! {
+                        ":stream_id": stream_id.as_ssz_bytes(),
+                        ":cursor": cursor,
+                        ":cutoff": cutoff as i64,
+                        ":limit": limit as i64,
+                    },
+                    |row| {
+                        Ok(StaleKey {
+                            stream_id,
+                            key: row.get(0)?,
+                            version: convert_to_u64(row.get(1)?),
+                            start_index: row.get(2)?,
+                            end_index: row.get(3)?,
+                            updated_at: row.get(4)?,
+                        })
+                    },
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(Into::into)
+            })
+            .await
+    }
+
     pub async fn get_tx_result(&self, tx_seq: u64) -> Result<Option<String>> {
         self.connection
             .call(move |conn| {
@@ -921,5 +955,53 @@ mod tests {
         assert_eq!(rows[0], (0, Some(100), Some(100)));
         assert_eq!(rows[1], (1, Some(100), Some(200))); // created carried forward
         assert_eq!(rows[2], (2, Some(100), None)); // no block time -> NULL updated_at
+    }
+
+    // NOTE: deviates from the task brief's literal seeds (1,2,3,4,5) because
+    // put_stream's replay-progress guard requires a fresh DB's first commit to
+    // be at tx_seq 0; seeds are shifted down by 1 (0,1,2,3,4) with version
+    // assertions adjusted accordingly. Page1 cutoff semantics are unchanged.
+    #[tokio::test]
+    async fn stale_scan_latest_version_pagination_and_nulls() {
+        let store = StreamStore::new_in_memory().await.unwrap();
+        store.create_tables_if_not_exist().await.unwrap();
+        let sid = H256::repeat_byte(1);
+        // key a: old v1, fresh v2 -> NOT stale; key b: old only -> stale
+        // key c: NULL ts -> excluded; key d: old -> stale
+        store
+            .put_stream(0, "Commit".into(), Some(write_set(sid, b"a")), Some(100))
+            .await
+            .unwrap();
+        store
+            .put_stream(1, "Commit".into(), Some(write_set(sid, b"a")), Some(9_000))
+            .await
+            .unwrap();
+        store
+            .put_stream(2, "Commit".into(), Some(write_set(sid, b"b")), Some(150))
+            .await
+            .unwrap();
+        store
+            .put_stream(3, "Commit".into(), Some(write_set(sid, b"c")), None)
+            .await
+            .unwrap();
+        store
+            .put_stream(4, "Commit".into(), Some(write_set(sid, b"d")), Some(160))
+            .await
+            .unwrap();
+
+        let page1 = store
+            .get_stale_stream_keys(sid, 1000, vec![], 1)
+            .await
+            .unwrap();
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1[0].key, b"b".to_vec());
+        assert_eq!(page1[0].version, 2);
+
+        let page2 = store
+            .get_stale_stream_keys(sid, 1000, page1[0].key.clone(), 10)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2[0].key, b"d".to_vec());
     }
 }

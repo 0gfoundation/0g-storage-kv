@@ -128,3 +128,13 @@ pub struct KeyValuePair {
     pub end_index: u64,
     pub version: u64,
 }
+
+#[derive(Debug, Clone)]
+pub struct StaleKey {
+    pub stream_id: H256,
+    pub key: Vec<u8>,
+    pub version: u64,
+    pub start_index: u64,
+    pub end_index: u64,
+    pub updated_at: u64,
+}

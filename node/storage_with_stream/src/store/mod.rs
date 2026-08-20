@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ethereum_types::{H160, H256};
-use kv_types::{AccessControlSet, KVTransaction, KeyValuePair, StreamWriteSet};
+use kv_types::{AccessControlSet, KVTransaction, KeyValuePair, StaleKey, StreamWriteSet};
 use shared_types::ChunkArray;
 
 use shared_types::FlowProof;
@@ -153,6 +153,14 @@ pub trait StreamRead {
     async fn get_first(&self, stream_id: H256, version: u64) -> Result<Option<KeyValuePair>>;
 
     async fn get_last(&self, stream_id: H256, version: u64) -> Result<Option<KeyValuePair>>;
+
+    async fn get_stale_stream_keys(
+        &self,
+        stream_id: H256,
+        cutoff: u64,
+        cursor: Vec<u8>,
+        limit: u64,
+    ) -> Result<Vec<StaleKey>>;
 }
 
 #[async_trait]
