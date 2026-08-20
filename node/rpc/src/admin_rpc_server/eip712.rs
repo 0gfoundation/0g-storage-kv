@@ -76,6 +76,49 @@ pub fn recover_register_stream_signer(
     signature.recover(H256::from(digest))
 }
 
+/// Compute the EIP-712 struct hash for `RenewNow(string purpose, address wallet, uint256 issuedAt)`.
+/// `purpose` is hashed (per EIP-712 string encoding); `wallet` and `issuedAt`
+/// are encoded as `address` and `uint256` respectively.
+pub fn renew_now_struct_hash(wallet: Address, issued_at: u64) -> [u8; 32] {
+    let typehash = keccak256(b"RenewNow(string purpose,address wallet,uint256 issuedAt)");
+
+    let encoded = encode(&[
+        Token::FixedBytes(typehash.to_vec()),
+        Token::FixedBytes(keccak256(RENEW_NOW_PURPOSE.as_bytes()).to_vec()),
+        Token::Address(wallet),
+        Token::Uint(U256::from(issued_at)),
+    ]);
+
+    keccak256(encoded)
+}
+
+/// Compute the full EIP-712 digest: `keccak256("\x19\x01" || domainSeparator || structHash)`.
+pub fn renew_now_digest(wallet: Address, issued_at: u64, chain_id: u64) -> [u8; 32] {
+    let domain = domain_separator(chain_id);
+    let struct_h = renew_now_struct_hash(wallet, issued_at);
+
+    let mut payload = Vec::with_capacity(2 + 32 + 32);
+    payload.extend_from_slice(b"\x19\x01");
+    payload.extend_from_slice(&domain);
+    payload.extend_from_slice(&struct_h);
+
+    keccak256(payload)
+}
+
+/// Recover the signer of a `RenewNow` typed-data payload. Returns
+/// `Ok(signer)` on a valid signature, `Err` if the signature is malformed.
+/// The caller is responsible for asserting the recovered address equals the
+/// expected `wallet`.
+pub fn recover_renew_now_signer(
+    wallet: Address,
+    issued_at: u64,
+    chain_id: u64,
+    signature: &Signature,
+) -> Result<Address, ethers::types::SignatureError> {
+    let digest = renew_now_digest(wallet, issued_at, chain_id);
+    signature.recover(H256::from(digest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +249,10 @@ mod tests {
         let rec = recover_renew_now_signer(wallet.address(), issued_at, 31337, &sig).unwrap();
         assert_eq!(rec, wallet.address());
         // different issuedAt -> different digest
-        assert_ne!(digest, renew_now_digest(wallet.address(), issued_at + 1, 31337));
+        assert_ne!(
+            digest,
+            renew_now_digest(wallet.address(), issued_at + 1, 31337)
+        );
     }
 
     #[tokio::test]

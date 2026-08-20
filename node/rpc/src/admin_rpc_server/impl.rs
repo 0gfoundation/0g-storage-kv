@@ -1,23 +1,31 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ethereum_types::{H160, H256};
 use ethers::types::{Address, Signature};
 use jsonrpsee::core::{async_trait, RpcResult};
 use ssz::Encode;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::RwLock;
 
 use storage_with_stream::Store;
 
 use super::api::AdminRpcServer;
-use super::eip712::recover_register_stream_signer;
+use super::eip712::{recover_register_stream_signer, recover_renew_now_signer};
 use crate::error;
+
+/// Freshness window (seconds) for `RenewNow` signatures: `issuedAt` must be
+/// within this many seconds of the node's clock in either direction.
+const RENEW_NOW_FRESHNESS_SECS: u64 = 300;
 
 pub struct AdminRpcServerImpl {
     pub store: Arc<RwLock<dyn Store>>,
     pub live_stream_set: Arc<RwLock<HashSet<H256>>>,
     pub chain_id: u64,
+    pub renew_trigger: Option<UnboundedSender<()>>,
+    pub renew_signer: Option<H160>,
 }
 
 #[async_trait]
@@ -98,6 +106,52 @@ impl AdminRpcServer for AdminRpcServerImpl {
         );
         Ok(true)
     }
+
+    async fn renew_now(&self, wallet: H160, issued_at: u64, signature: String) -> RpcResult<bool> {
+        // Freshness: reject signatures that are stale or future-dated so a
+        // captured signature cannot be replayed later.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now.abs_diff(issued_at) > RENEW_NOW_FRESHNESS_SECS {
+            return Err(error::invalid_params("issuedAt", "stale or future-dated"));
+        }
+
+        // Parse the hex signature.
+        let signature = Signature::from_str(signature.trim_start_matches("0x"))
+            .map_err(|e| error::invalid_params("signature", format!("not valid hex: {:?}", e)))?;
+
+        // Convert ethereum_types::H160 -> ethers::types::Address (same 20 bytes).
+        let claimed = Address::from_slice(wallet.as_bytes());
+
+        // Recover the signer from the EIP-712 digest.
+        let recovered = recover_renew_now_signer(claimed, issued_at, self.chain_id, &signature)
+            .map_err(|e| error::invalid_params("signature", format!("recovery failed: {:?}", e)))?;
+
+        if recovered != claimed {
+            return Err(error::invalid_params(
+                "signature",
+                "recovered signer does not match claimed wallet",
+            ));
+        }
+
+        // The recovered/claimed wallet must be the node's configured renewal signer.
+        if self.renew_signer != Some(wallet) {
+            return Err(error::invalid_params(
+                "wallet",
+                "renewal disabled or wallet is not the renewal signer",
+            ));
+        }
+
+        match &self.renew_trigger {
+            Some(trigger) => trigger
+                .send(())
+                .map(|_| true)
+                .map_err(|_| error::internal_error("renewal service not running")),
+            None => Err(error::invalid_params("renewal", "renewal disabled")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -139,7 +193,26 @@ mod tests {
             store,
             live_stream_set: Arc::new(RwLock::new(HashSet::new())),
             chain_id: test_chain_id(),
+            renew_trigger: None,
+            renew_signer: None,
         }
+    }
+
+    /// Sign a `RenewNow` payload as `wallet` and return the wire-format
+    /// signature string (`0x`-prefixed hex).
+    fn sign_renew_now(wallet: &LocalWallet, issued_at: u64, chain_id: u64) -> String {
+        use super::super::eip712::renew_now_digest;
+        use ethers::utils::hex;
+        let digest = renew_now_digest(wallet.address(), issued_at, chain_id);
+        let sig = wallet.sign_hash(EthersH256::from(digest)).unwrap();
+        format!("0x{}", hex::encode(sig.to_vec()))
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 
     fn h160_from_address(addr: Address) -> H160 {
@@ -347,5 +420,138 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn renew_now_sends_trigger_on_valid_signature() {
+        let wallet = test_wallet();
+        let claimed = h160_from_address(wallet.address());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut svc = fixture().await;
+        svc.renew_trigger = Some(tx);
+        svc.renew_signer = Some(claimed);
+
+        let issued_at = now_secs();
+        let sig = sign_renew_now(&wallet, issued_at, test_chain_id());
+
+        assert!(svc.renew_now(claimed, issued_at, sig).await.unwrap());
+        assert!(
+            rx.try_recv().is_ok(),
+            "trigger channel must receive a signal"
+        );
+    }
+
+    #[tokio::test]
+    async fn renew_now_rejects_stale_issued_at() {
+        let wallet = test_wallet();
+        let claimed = h160_from_address(wallet.address());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut svc = fixture().await;
+        svc.renew_trigger = Some(tx);
+        svc.renew_signer = Some(claimed);
+
+        let issued_at = now_secs() - 301;
+        let sig = sign_renew_now(&wallet, issued_at, test_chain_id());
+
+        let result = svc.renew_now(claimed, issued_at, sig).await;
+        assert!(result.is_err(), "must reject stale issuedAt");
+    }
+
+    #[tokio::test]
+    async fn renew_now_rejects_future_issued_at() {
+        let wallet = test_wallet();
+        let claimed = h160_from_address(wallet.address());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut svc = fixture().await;
+        svc.renew_trigger = Some(tx);
+        svc.renew_signer = Some(claimed);
+
+        let issued_at = now_secs() + 301;
+        let sig = sign_renew_now(&wallet, issued_at, test_chain_id());
+
+        let result = svc.renew_now(claimed, issued_at, sig).await;
+        assert!(result.is_err(), "must reject future-dated issuedAt");
+    }
+
+    #[tokio::test]
+    async fn renew_now_rejects_signature_from_wrong_wallet() {
+        let signer = test_wallet();
+        let other_wallet: LocalWallet =
+            "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+                .parse()
+                .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut svc = fixture().await;
+        svc.renew_trigger = Some(tx);
+        svc.renew_signer = Some(h160_from_address(other_wallet.address()));
+
+        let issued_at = now_secs();
+        // Signer signs, but caller claims wallet is other_wallet.
+        let sig = sign_renew_now(&signer, issued_at, test_chain_id());
+
+        let result = svc
+            .renew_now(h160_from_address(other_wallet.address()), issued_at, sig)
+            .await;
+        assert!(result.is_err(), "must reject mismatched signer/wallet");
+    }
+
+    #[tokio::test]
+    async fn renew_now_rejects_wallet_that_is_not_the_configured_renew_signer() {
+        let wallet = test_wallet();
+        let claimed = h160_from_address(wallet.address());
+        let other_signer = H160::from([0x42; 20]);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut svc = fixture().await;
+        svc.renew_trigger = Some(tx);
+        svc.renew_signer = Some(other_signer); // configured signer differs from wallet
+
+        let issued_at = now_secs();
+        let sig = sign_renew_now(&wallet, issued_at, test_chain_id());
+
+        let result = svc.renew_now(claimed, issued_at, sig).await;
+        assert!(
+            result.is_err(),
+            "must reject a wallet that is not the configured renewal signer"
+        );
+    }
+
+    #[tokio::test]
+    async fn renew_now_disabled_when_no_renew_signer_or_trigger_configured() {
+        // Default fixture has renew_trigger: None, renew_signer: None.
+        let wallet = test_wallet();
+        let claimed = h160_from_address(wallet.address());
+        let svc = fixture().await;
+
+        let issued_at = now_secs();
+        let sig = sign_renew_now(&wallet, issued_at, test_chain_id());
+
+        let result = svc.renew_now(claimed, issued_at, sig).await;
+        assert!(result.is_err(), "must reject when renewal is disabled");
+    }
+
+    #[tokio::test]
+    async fn renew_now_errors_when_trigger_receiver_dropped() {
+        let wallet = test_wallet();
+        let claimed = h160_from_address(wallet.address());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(rx); // service side gone
+
+        let mut svc = fixture().await;
+        svc.renew_trigger = Some(tx);
+        svc.renew_signer = Some(claimed);
+
+        let issued_at = now_secs();
+        let sig = sign_renew_now(&wallet, issued_at, test_chain_id());
+
+        let result = svc.renew_now(claimed, issued_at, sig).await;
+        assert!(
+            result.is_err(),
+            "must surface an error when the renewal service is not running"
+        );
     }
 }
