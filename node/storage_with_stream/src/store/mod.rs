@@ -211,6 +211,10 @@ pub trait StreamRead {
         min_attempts: u64,
         limit: u64,
     ) -> Result<Vec<(H256, Vec<u8>, RenewAttempt)>>;
+
+    /// Distinct versions with a NULL `updated_at` across `t_stream` and
+    /// `t_access_control`, ascending, for the backfill pass (spec §3).
+    async fn get_null_time_versions(&self, limit: u64) -> Result<Vec<u64>>;
 }
 
 #[async_trait]
@@ -245,6 +249,11 @@ pub trait StreamWrite {
     ) -> Result<()>;
 
     async fn clear_renew_attempt(&self, stream_id: H256, key: Vec<u8>) -> Result<()>;
+
+    /// Fills NULL `updated_at`/`created_at` for `version` in both `t_stream`
+    /// and `t_access_control`, in one transaction. Rows that already have a
+    /// timestamp are left untouched.
+    async fn backfill_version_time(&self, version: u64, ts: u64) -> Result<()>;
 }
 
 #[cfg(test)]
