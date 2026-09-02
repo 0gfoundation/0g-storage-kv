@@ -13,6 +13,7 @@ hex = "0.4.3"
 kvdb = "0.13.0"
 kvdb-memorydb = "0.13.0"
 kvdb-rocksdb = "0.19.0"
+rocksdb = { version = "0.21", default-features = false }
 merkle_light = { workspace = true }
 merkle_tree = { workspace = true }
 storage = { workspace = true }

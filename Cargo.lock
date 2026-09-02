@@ -7559,6 +7559,7 @@ dependencies = [
  "merkle_tree",
  "rand 0.8.5",
  "rayon",
+ "rocksdb",
  "rusqlite",
  "shared_types",
  "storage",
