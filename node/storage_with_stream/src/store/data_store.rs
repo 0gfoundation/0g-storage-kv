@@ -27,6 +27,37 @@ pub const COL_BLOCK_PROGRESS: u32 = 4;
 pub const COL_TX_TIME: u32 = 5;
 pub const COL_NUM: u32 = 6;
 
+/// Materializes any column family up to `target_columns` that an existing
+/// on-disk database predates (e.g. `COL_TX_TIME`, added when `COL_NUM` grew
+/// from 5 to 6). `kvdb_rocksdb::Database::open` cannot grow an existing
+/// database itself: its fallback path reopens with an empty column list,
+/// which RocksDB rejects once any column family already exists on disk
+/// ("Column families not opened: col4, col3, ..."). A no-op for a database
+/// that doesn't exist yet or is already at `target_columns`.
+fn ensure_column_families(path: &Path, target_columns: u32) -> Result<()> {
+    let probe_opts = rocksdb::Options::default();
+    let existing = match rocksdb::DB::list_cf(&probe_opts, path) {
+        Ok(cfs) => cfs,
+        Err(_) => return Ok(()), // no existing database; nothing to migrate
+    };
+
+    let wanted: Vec<String> = (0..target_columns).map(|c| format!("col{}", c)).collect();
+    if wanted.iter().all(|name| existing.contains(name)) {
+        return Ok(());
+    }
+
+    let mut open_opts = rocksdb::Options::default();
+    open_opts.create_missing_column_families(true);
+    let descriptors = wanted
+        .iter()
+        .map(|name| rocksdb::ColumnFamilyDescriptor::new(name, rocksdb::Options::default()));
+    // Opened only to force RocksDB to create the missing column families on
+    // disk, then dropped; the real, tuned open happens right after in `rocksdb()`.
+    rocksdb::DB::open_cf_descriptors(&open_opts, path, descriptors)
+        .map_err(|e| anyhow!("Unable to create missing column families: {}", e))?;
+    Ok(())
+}
+
 pub struct DataStore {
     flow_store: FlowStore,
     tx_store: TransactionStore,
@@ -34,6 +65,7 @@ pub struct DataStore {
 
 impl DataStore {
     pub fn rocksdb(path: impl AsRef<Path>) -> Result<Self> {
+        ensure_column_families(path.as_ref(), COL_NUM)?;
         let mut db_config = DatabaseConfig::with_columns(COL_NUM);
         db_config.enable_statistics = true;
         let db = Arc::new(Database::open(&db_config, path)?);
@@ -193,5 +225,27 @@ impl DataStore {
 
     pub fn get_tx_block_time(&self, tx_seq: u64) -> Result<Option<u64>> {
         self.tx_store.get_block_time(tx_seq)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Reproduces the upgrade failure: a database created with the
+    // pre-`COL_TX_TIME` column count (5) must still open once the code
+    // expects 6. `kvdb_rocksdb::Database::open`'s own fallback can't do
+    // this on an existing database -- see `ensure_column_families`.
+    #[test]
+    fn rocksdb_opens_after_column_count_grows() {
+        let dir = tempdir::TempDir::new("data_store_migration_test").unwrap();
+        let path = dir.path();
+
+        {
+            let old_config = DatabaseConfig::with_columns(5);
+            Database::open(&old_config, path).expect("initial 5-column open");
+        }
+
+        DataStore::rocksdb(path).expect("re-opening with a grown column count must succeed");
     }
 }
